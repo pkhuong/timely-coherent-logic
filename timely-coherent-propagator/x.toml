@@ -1,0 +1,11 @@
+# `cargo install cargo-x`, then run `cargo x coverage` or `cargo x
+# clippy`
+
+# Generates a coverage report for the test suite.
+coverage = "cargo tarpaulin --out=Html --ignore-tests"
+
+# Disable `module_name_repetitions`: we use facades extensively, so
+# repetition or stuttering is often invisible to external users.
+clippy = "cargo clean -p timely-coherent-propagator && cargo clippy -- -W clippy::all -W clippy::cargo -W clippy::pedantic -A clippy::module_name_repetitions"
+
+clippy_tests = "cargo clean -p timely-coherent-propagator && cargo clippy --tests -- -W clippy::all -W clippy::cargo -W clippy::pedantic -A clippy::module_name_repetitions -A clippy::many_single_char_names -A clippy::blacklisted_name -A clippy::redundant_clone"
