@@ -1,0 +1,12 @@
+[package]
+name = "timely-coherent-logic"
+version = "0.1.0"
+authors = ["Paul Khuong <pvk@pvk.ca>"]
+description = "A small solver for coherent logic."
+license = "MIT"
+repository = "https://github.com/pkhuong/timely-coherent-logic"
+keywords = ["logic", "coherent logic", "prover", "incremental"]
+categories = ["mathematics"]
+edition = "2018"
+
+[dependencies]
