@@ -1,0 +1,2 @@
+# `cargo install cargo-x`, then run `cargo x coverage`
+coverage = "cargo tarpaulin --out=Html --ignore-tests"
