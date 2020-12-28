@@ -1,0 +1,7 @@
+*~
+*#
+*.swp
+*.swo
+/target
+tarpaulin-report.html
+tcl.html
