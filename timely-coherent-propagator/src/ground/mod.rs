@@ -7,6 +7,9 @@
 //! in Collections.  Our ground data structures must thus be as light
 //! as possible, while offering fast hashing and comparison.
 
+mod record;
 mod variable;
 
+pub use record::Capture;
+pub use record::Fact;
 pub use variable::Variable;
