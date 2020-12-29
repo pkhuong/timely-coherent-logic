@@ -19,4 +19,5 @@ mod metavariable;
 mod project;
 
 pub use metavariable::MetaVar;
+pub use project::MultiProjection;
 pub use project::Projection;
