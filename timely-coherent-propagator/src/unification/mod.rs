@@ -23,5 +23,6 @@ pub use metavariable::MetaVar;
 pub use pattern::instantiate_template;
 pub use pattern::Element;
 pub use pattern::Pattern;
+pub use pattern::Template;
 pub use project::MultiProjection;
 pub use project::Projection;
