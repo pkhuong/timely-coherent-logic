@@ -16,8 +16,11 @@
 //! especially in the differential dataflow world, where containers
 //! are updated incrementally.
 mod metavariable;
+mod pattern;
 mod project;
 
 pub use metavariable::MetaVar;
+pub use pattern::Element;
+pub use pattern::Pattern;
 pub use project::MultiProjection;
 pub use project::Projection;
