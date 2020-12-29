@@ -57,6 +57,15 @@ pub struct Record<Tag: 'static> {
 }
 
 impl<Tag> Record<Tag> {
+    /// Explicit type conversion from Record<Other> to Record<Tag>.
+    /// Exposed as an associated function, and not as a `From`
+    /// instance, in order to avoid accidental conversion.
+    #[inline]
+    #[must_use]
+    pub fn from_record<Other>(other: Record<Other>) -> Self {
+        Self::from_box(other.vars)
+    }
+
     #[inline]
     #[must_use]
     pub fn from_vec(vec: Vec<Variable>) -> Self {
@@ -145,5 +154,16 @@ fn eq() {
     assert_eq!(
         Capture::from_slice(&[v1, v2]),
         Capture::from_slice(&[v1, v2])
+    );
+}
+
+#[test]
+fn conversion() {
+    let v1 = Variable::fresh();
+    let v2 = Variable::fresh();
+
+    assert_eq!(
+        Fact::from_slice(&[v1, v2]),
+        Fact::from_record(Capture::from_slice(&[v1, v2]))
     );
 }
