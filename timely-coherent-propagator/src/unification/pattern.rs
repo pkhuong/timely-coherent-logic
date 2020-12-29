@@ -82,6 +82,41 @@ impl Pattern {
     }
 }
 
+/// A `Template` specifies a conversion from `Capture`s to `Fact`s.
+pub struct Template {
+    input: Vec<MetaVar>,
+    output_len: usize,
+    fun: Box<dyn Fn(&Capture) -> Fact>,
+}
+
+impl Template {
+    /// Returns a `Template` from `Capture`s matching `inp` to `Fact`s
+    /// matching `out`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if `out` refers to a `MetaVar` absent from `inp`.
+    pub fn new(inp: &[MetaVar], out: &[Element]) -> Result<Template, &'static str> {
+        make_template(inp, out)
+    }
+
+    #[must_use]
+    pub fn input(&self) -> &[MetaVar] {
+        &self.input
+    }
+
+    #[must_use]
+    pub fn output_len(&self) -> usize {
+        self.output_len
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn apply(&self, input: &Capture) -> Fact {
+        (self.fun)(input)
+    }
+}
+
 fn make_pattern(pattern: &[Element]) -> Pattern {
     // Represent indices as u8 for density.
     let mut match_variables = Vec::<MetaVar>::new();
@@ -134,6 +169,56 @@ fn make_pattern(pattern: &[Element]) -> Pattern {
         output: match_variables,
         fun: Box::new(matcher),
     }
+}
+
+fn make_template(inp: &[MetaVar], pattern: &[Element]) -> Result<Template, &'static str> {
+    let find_index = |needle: &MetaVar| {
+        for (index, haystack) in inp.iter().enumerate() {
+            if haystack == needle {
+                return Ok(index);
+            }
+        }
+
+        Err("Needle not found in the input haystack")
+    };
+
+    // Plop constants in place, and copy that base template for each
+    // new instantiation.
+    let mut base = Vec::<Variable>::with_capacity(pattern.len());
+    base.resize(pattern.len(), Variable::uninit());
+
+    // The `indices` vector tells us where to copy variables from the
+    // source `Capture` to the output `Fact`.  The first index in each
+    // pair is the source index, and the second the destination index.
+    let mut substitutions = Vec::<(u8, u8)>::new();
+
+    for (index, elt) in pattern.iter().enumerate() {
+        let Element::Reference(mv) = elt;
+        let src_index = find_index(mv)?;
+        substitutions.push((
+            u8::try_from(src_index).expect("Wide source captures not supported"),
+            u8::try_from(index).expect("Wide destination predicates not supported"),
+        ));
+    }
+
+    let expected_input_len = inp.len();
+    let instantiate = move |capture: &Capture| {
+        let vars = capture.vars();
+        let mut result = base.clone();
+
+        assert_eq!(vars.len(), expected_input_len);
+        for (src_index, dst_index) in substitutions.iter().copied() {
+            result[dst_index as usize] = vars[src_index as usize];
+        }
+
+        result.into()
+    };
+
+    Ok(Template {
+        input: inp.into(),
+        output_len: pattern.len(),
+        fun: Box::new(instantiate),
+    })
 }
 
 #[test]
@@ -226,4 +311,57 @@ fn test_pattern_match_mismatch() {
         .collect::<Vec<_>>()
         .into();
     assert_eq!(pattern.try_match(&args2), None);
+}
+
+#[test]
+fn test_template_happy_path() {
+    let x = MetaVar::new("x");
+    let y = MetaVar::new("y");
+
+    let template = Template::new(
+        &[x.clone(), y.clone()],
+        &[
+            Element::Reference(x.clone()),
+            Element::Reference(y.clone()),
+            Element::Reference(x.clone()),
+        ],
+    )
+    .expect("ok");
+
+    assert_eq!(template.input(), &[x.clone(), y.clone()]);
+    assert_eq!(template.output_len(), 3);
+
+    assert_eq!(
+        template.apply(&[Variable::new(2), Variable::new(3)].into()),
+        [2, 3, 2]
+            .iter()
+            .map(|i| Variable::new(*i))
+            .collect::<Vec<_>>()
+            .into()
+    );
+
+    assert_eq!(
+        template.apply(&[Variable::new(5), Variable::new(1)].into()),
+        [5, 1, 5]
+            .iter()
+            .map(|i| Variable::new(*i))
+            .collect::<Vec<_>>()
+            .into()
+    );
+}
+
+#[test]
+fn test_template_missing_variable() {
+    let x = MetaVar::new("x");
+    let y = MetaVar::new("y");
+
+    assert!(Template::new(
+        &[x.clone(), x.clone()],
+        &[
+            Element::Reference(x.clone()),
+            Element::Reference(y.clone()),
+            Element::Reference(x.clone()),
+        ],
+    )
+    .is_err());
 }
