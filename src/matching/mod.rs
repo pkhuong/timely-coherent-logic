@@ -32,3 +32,7 @@
 //! matching expression helps introduce rewrites (e.g., local
 //! heuristic transforms or global tree parsing), and is also useful
 //! for debugging.
+mod expression;
+
+pub use expression::Constraint;
+pub use expression::PredicateFormula;
