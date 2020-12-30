@@ -33,6 +33,8 @@
 //! heuristic transforms or global tree parsing), and is also useful
 //! for debugging.
 mod expression;
+pub mod plan;
 
 pub use expression::Constraint;
 pub use expression::PredicateFormula;
+pub use plan::Plan;
