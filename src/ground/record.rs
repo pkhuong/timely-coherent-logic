@@ -10,6 +10,10 @@
 //! clone, which should be avoided in inner loops).
 
 use super::Variable;
+// This I/O stuff is only needed for the stub Abomonation trait
+// implementation.
+use std::io::Result as IOResult;
+use std::io::Write;
 
 // We should not need to implement these traits for a phantom type,
 // but https://github.com/rust-lang/rust/issues/26925...
@@ -87,6 +91,24 @@ where
     #[inline]
     fn from(slice: T) -> Self {
         Self::from_slice(slice.as_ref())
+    }
+}
+
+/// Differential Dataflow has a hard requirement on "Abomonating" data
+/// in Collection, but we don't exercise the logic that actually
+/// abomonates.
+#[cfg(not(tarpaulin_include))]
+impl<Tag> abomonation::Abomonation for Record<Tag> {
+    unsafe fn entomb<W: Write>(&self, _write: &mut W) -> IOResult<()> {
+        panic!("Abomonation not implemented for Records.");
+    }
+
+    unsafe fn exhume<'a, 'b>(&'a mut self, _bytes: &'b mut [u8]) -> Option<&'b mut [u8]> {
+        panic!("Abomonation not implemented for Records.");
+    }
+
+    fn extent(&self) -> usize {
+        panic!("Abomonation not implemented for Records.");
     }
 }
 
