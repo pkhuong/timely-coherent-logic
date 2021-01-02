@@ -4,6 +4,7 @@ mod instantiate_conjuncts;
 mod lower_plan;
 mod sink;
 mod split_containers;
+mod trivial;
 
 pub use instantiate_conjuncts::push_conjunct_instances;
 pub use instantiate_conjuncts::reify_conjunct_instances;
@@ -17,3 +18,5 @@ pub use split_containers::CaptureCollection;
 pub use split_containers::CaptureVariable;
 pub use split_containers::FactCollection;
 pub use split_containers::FactVariable;
+pub use trivial::saturate_trivialities;
+pub use trivial::TrivialSequent;
