@@ -37,4 +37,5 @@ pub mod plan;
 
 pub use expression::Constraint;
 pub use expression::PredicateFormula;
+pub use plan::plan_constraint;
 pub use plan::Plan;
