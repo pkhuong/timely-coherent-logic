@@ -34,7 +34,9 @@
 //! for debugging.
 mod expression;
 pub mod plan;
+mod planner;
 
 pub use expression::Constraint;
 pub use expression::PredicateFormula;
 pub use plan::Plan;
+pub use planner::plan_constraint;
