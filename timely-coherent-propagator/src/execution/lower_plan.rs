@@ -4,6 +4,7 @@ use super::{CaptureCollection, FactCollection};
 use crate::ground::Capture;
 use crate::matching::plan::FilterOp;
 use crate::matching::plan::Plan;
+use crate::matching::plan::ProjectOp;
 use crate::unification;
 use crate::unification::MetaVar;
 use differential_dataflow::input::Input;
@@ -40,12 +41,13 @@ where
     G::Timestamp: Lattice + Ord,
     Injector: FnMut(&mut G, Vec<Capture>) -> Collection<G, Capture>,
 {
-    use crate::matching::plan::PlanOp::{Constant, Filter};
+    use crate::matching::plan::PlanOp::{Constant, Filter, Project};
 
     let planned_shape = plan.result();
     let result = match plan.op() {
         Constant => lower_constant(scope, injector, inputs),
         Filter(op) => lower_filter(scope, injector, op, inputs),
+        Project(op) => lower_project(scope, injector, planned_shape, op, inputs),
     }?;
 
     // If the result's shape does not match the plan, something went
@@ -103,6 +105,29 @@ where
         .container
         .flat_map(move |fact| pattern.try_match(&fact));
     Ok(CaptureCollection::new(shape, collection))
+}
+
+/// A projection stage rearranges (reorders, copies, or drops)
+/// variables from a collection of captures.
+fn lower_project<G: Scope, Injector, H: std::hash::BuildHasher>(
+    scope: &mut G,
+    injector: &mut Injector,
+    kept: &[MetaVar],
+    op: &ProjectOp,
+    inputs: &FactMap<G, H>,
+) -> PlanResult<G>
+where
+    G::Timestamp: Lattice + Ord,
+    Injector: FnMut(&mut G, Vec<Capture>) -> Collection<G, Capture>,
+{
+    let input = lower_matching_plan(scope, injector, op.input(), inputs)?;
+    let project = unification::Projection::new(&input.shape, kept)?;
+    let shape: Vec<MetaVar> = project.output().into();
+
+    Ok(CaptureCollection::new(
+        shape,
+        input.container.map(move |fact| project.apply(&fact)),
+    ))
 }
 
 #[test]
@@ -233,4 +258,54 @@ fn test_filter_incorrect_source_source() {
 
         assert!(lower_matching_plan(scope, &mut default_injector, &filter, &sources).is_err());
     });
+}
+
+#[test]
+fn test_project_happy_path() {
+    use super::CaptureSink;
+    use crate::ground::Variable;
+    use crate::matching::plan::Source;
+    use crate::unification::Element;
+    use differential_dataflow::input::InputSession;
+    use std::collections::HashSet;
+
+    let x = MetaVar::new("x");
+    let y = MetaVar::new("y");
+    let source = Source::new("foo", 2);
+
+    let pattern = [Element::Reference(x.clone()), Element::Reference(y.clone())];
+    let filter = Plan::filter(source.clone(), &pattern).expect("ok");
+    let project = Plan::project(filter, &[y.clone()]).expect("ok");
+
+    let sink = CaptureSink::new(project.result().into());
+    let writer = sink.writer();
+
+    timely::execute::example(move |scope| {
+        let mut foo = InputSession::new();
+
+        let sources = vec![(
+            "foo".into(),
+            FactCollection::new(2, foo.to_collection(scope)),
+        )]
+        .into_iter()
+        .collect::<std::collections::HashMap<String, _>>();
+
+        let captures =
+            lower_matching_plan(scope, &mut default_injector, &project, &sources).expect("ok");
+        writer.attach(&captures).expect("ok");
+
+        foo.advance_to(0);
+        for i in 1..5 {
+            foo.insert([Variable::new(i), Variable::new(2 * i)].into());
+            foo.insert([Variable::new(i), Variable::new(2 * i + 1)].into());
+        }
+
+        foo.flush();
+        foo.advance_to(1);
+    });
+
+    assert_eq!(
+        sink.values::<HashSet<_>>(),
+        (2..10).map(|i| [Variable::new(i)].into()).collect()
+    );
 }

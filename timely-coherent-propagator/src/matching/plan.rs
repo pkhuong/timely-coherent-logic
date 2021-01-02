@@ -5,7 +5,7 @@
 //!
 //! For the foreseeable future, we will stick to nodes that can be
 //! directly translated to differential dataflow operators.
-use crate::unification::{Element, MetaVar, Pattern};
+use crate::unification::{Element, MetaVar, Pattern, Projection};
 
 /// A source is a collection from which we can read tuples of
 /// `Variable`s.
@@ -47,6 +47,9 @@ pub enum PlanOp {
     /// A Filter operator takes a source of facts, and yields captures
     /// for facts that match the `pattern`.
     Filter(FilterOp),
+    /// A Project operator takes an operator's results, and restructures
+    /// each capture tuple in that collection.
+    Project(ProjectOp),
 }
 
 impl Plan {
@@ -82,6 +85,17 @@ impl Plan {
     /// Returns `Err` when `pattern`'s shape does not match `source`'s.
     pub fn filter(source: Source, pattern: &[Element]) -> Result<Self, &'static str> {
         FilterOp::make(source, pattern)
+    }
+
+    /// Constructs a plan that restructures the `input`'s tuples to
+    /// match `kept`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` when `kept` includes `MetaVar`s absent from
+    /// `input`'s result shape.
+    pub fn project(input: Plan, kept: &[MetaVar]) -> Result<Self, &'static str> {
+        ProjectOp::make(input, kept)
     }
 }
 
@@ -120,6 +134,30 @@ impl FilterOp {
     }
 }
 
+#[derive(Debug, Hash, Eq, PartialEq)]
+pub struct ProjectOp {
+    input: Box<Plan>,
+}
+
+impl ProjectOp {
+    #[cfg(not(tarpaulin_include))]
+    #[must_use]
+    pub fn input(&self) -> &Plan {
+        &self.input
+    }
+
+    fn make(input: Plan, kept: &[MetaVar]) -> Result<Plan, &'static str> {
+        let parsed = Projection::new(&input.result, kept)?;
+
+        Ok(Plan {
+            result: parsed.output().into(),
+            op: PlanOp::Project(ProjectOp {
+                input: Box::new(input),
+            }),
+        })
+    }
+}
+
 #[test]
 fn filter_happy_path() {
     let x = MetaVar::new("x");
@@ -137,4 +175,25 @@ fn filter_mismatch() {
     let pattern = [Element::Reference(x.clone()), Element::Reference(x.clone())];
 
     assert!(Plan::filter(source.clone(), &pattern).is_err());
+}
+
+#[test]
+fn project_happy_path() {
+    let x = MetaVar::new("x");
+    let y = MetaVar::new("y");
+    let source = Source::new("foo", 2);
+    let pattern = [Element::Reference(x.clone()), Element::Reference(y.clone())];
+    let filter = Plan::filter(source, &pattern).expect("ok");
+    let project = Plan::project(filter, &[y.clone()]).expect("ok");
+    assert_eq!(project.result(), &[y.clone()]);
+}
+
+#[test]
+fn project_missing_var() {
+    let x = MetaVar::new("x");
+    let y = MetaVar::new("y");
+    let source = Source::new("foo", 2);
+    let pattern = [Element::Reference(y.clone()), Element::Reference(y.clone())];
+    let filter = Plan::filter(source, &pattern).expect("ok");
+    assert!(Plan::project(filter, &[x.clone()]).is_err());
 }
