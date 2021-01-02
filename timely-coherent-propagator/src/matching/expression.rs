@@ -127,7 +127,7 @@ where
 {
     let mut ret = BTreeSet::<MetaVar>::new();
 
-    for formula in conjuncts.into_iter() {
+    for formula in conjuncts {
         ret = formula.insert_metavars(ret);
     }
 
