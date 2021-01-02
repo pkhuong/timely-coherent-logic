@@ -10,3 +10,4 @@ categories = ["mathematics"]
 edition = "2018"
 
 [dependencies]
+abomonation = "0.7.3"
