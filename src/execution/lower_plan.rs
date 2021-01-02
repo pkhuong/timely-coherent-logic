@@ -6,6 +6,7 @@ use crate::matching::plan::*;
 use crate::unification;
 use crate::unification::MetaVar;
 use differential_dataflow::lattice::Lattice;
+use differential_dataflow::operators::Join;
 use differential_dataflow::Collection;
 use timely::dataflow::Scope;
 
@@ -33,6 +34,7 @@ where
         Constant => lower_constant(scope, injector, inputs),
         Filter(op) => lower_filter(scope, injector, op, inputs),
         Project(op) => lower_project(scope, injector, planned_shape, op, inputs),
+        Join(op) => lower_join(scope, injector, planned_shape, op, inputs),
     }?;
 
     // If the result's shape does not match the plan, something went
@@ -113,6 +115,57 @@ where
         shape,
         input.container.map(move |fact| project.apply(&fact)),
     ))
+}
+
+/// In order to join two collections on a join key, we must extract
+/// the join key values from each, let differential dataflow pair up
+/// entries with identical join keys from each collection, and extract
+/// the metavariables we want from each pair of matching captures.
+fn lower_join<G: Scope, Injector>(
+    scope: &mut G,
+    injector: &mut Injector,
+    kept: &[MetaVar],
+    op: &JoinOp,
+    inputs: &FactMap<G>,
+) -> PlanResult<G>
+where
+    G::Timestamp: Lattice + Ord,
+    Injector: FnMut(&mut G, Vec<Capture>) -> Collection<G, Capture>,
+{
+    // We only support binary joins for now (enforced in the
+    // constructor).
+    assert!(op.inputs().len() == 2);
+
+    let join_key = op.key();
+    let input_nodes = op
+        .inputs()
+        .iter()
+        .map(|plan| lower_matching_plan(scope, injector, plan, inputs))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let tagged_inputs = input_nodes
+        .iter()
+        .map(|collection| {
+            let projection = unification::Projection::new(&collection.shape, join_key)?;
+            Ok(collection
+                .container
+                .map(move |capture| (projection.apply(&capture), capture)))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let final_projection = unification::MultiProjection::new(
+        &input_nodes
+            .iter()
+            .map(|split| split.shape.clone().into_boxed_slice())
+            .collect::<Vec<_>>(),
+        kept,
+    )?;
+
+    let final_shape: Vec<MetaVar> = final_projection.output().into();
+    let collection = tagged_inputs[0].join_map(&tagged_inputs[1], move |_key, x, y| {
+        final_projection.from_pair(x, y)
+    });
+    Ok(CaptureCollection::new(final_shape, collection))
 }
 
 #[test]
@@ -316,5 +369,89 @@ fn test_project_happy_path() {
     assert_eq!(
         sink.values::<HashSet<_>>(),
         (2..10).map(|i| [Variable::new(i)].into()).collect()
+    );
+}
+
+#[test]
+fn test_join_happy_path() {
+    use super::CaptureSink;
+    use crate::ground::Variable;
+    use crate::unification::Element;
+    use differential_dataflow::input::InputSession;
+    use std::collections::HashSet;
+
+    let x = MetaVar::new("x");
+    let y = MetaVar::new("y");
+    let z = MetaVar::new("z");
+
+    let p1 = Plan::filter(
+        Source::new("foo", 2),
+        &[Element::Reference(x.clone()), Element::Reference(y.clone())],
+    )
+    .expect("ok");
+    let p2 = Plan::filter(
+        Source::new("bar", 2),
+        &[Element::Reference(y.clone()), Element::Reference(z.clone())],
+    )
+    .expect("ok");
+    let join = Plan::join(
+        vec![p1, p2],
+        &[y.clone()],
+        &[x.clone(), y.clone(), z.clone()],
+    )
+    .expect("ok");
+
+    let sink = CaptureSink::new(join.result().into());
+    let writer = sink.writer();
+
+    timely::execute::example(move |scope| {
+        let mut foo = InputSession::new();
+        let mut bar = InputSession::new();
+
+        let sources: FactMap<_> = vec![
+            (
+                "foo".into(),
+                FactCollection::new(2, foo.to_collection(scope)),
+            ),
+            (
+                "bar".into(),
+                FactCollection::new(2, bar.to_collection(scope)),
+            ),
+        ]
+        .into_iter()
+        .collect();
+
+        let captures = lower_matching_plan(
+            scope,
+            &mut |_1, _2| panic!("Should not need constants"),
+            &join,
+            &sources,
+        )
+        .expect("ok");
+        writer.attach(&captures).expect("ok");
+
+        foo.advance_to(0);
+        for (x, y) in [(1, 2), (3, 4), (5, 2), (6, 7)].iter() {
+            foo.insert([Variable::new(*x), Variable::new(*y)].into());
+        }
+
+        foo.flush();
+        foo.advance_to(1);
+
+        for (y, z) in [(2, 10), (7, 11)].iter() {
+            bar.insert([Variable::new(*y), Variable::new(*z)].into());
+        }
+
+        bar.flush();
+        bar.advance_to(1);
+    });
+
+    assert_eq!(
+        sink.values::<HashSet<_>>(),
+        [(1, 2, 10), (5, 2, 10), (6, 7, 11)]
+            .iter()
+            .cloned()
+            .map(|(x, y, z)| [Variable::new(x), Variable::new(y), Variable::new(z)].into())
+            .collect()
     );
 }

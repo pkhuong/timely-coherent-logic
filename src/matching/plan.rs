@@ -5,7 +5,8 @@
 //! especially once we stop assuming binary joins.  Let's start with
 //! operators that are trivial to express in Differential Dataflow,
 //! and a criminally trivial plan.
-use crate::unification::{Element, MetaVar, Pattern, Projection};
+use crate::unification::{Element, MetaVar, MultiProjection, Pattern, Projection};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 /// A source is a collection from which we can read tuples of
 /// `Variable`s.
@@ -49,6 +50,10 @@ pub enum PlanOp {
     /// A Project operator takes an operator's results, and restructures
     /// each capture tuple in that collection.
     Project(ProjectOp),
+    /// A Join operator takes a sequence of operators, equijoins their
+    /// facts by the `Variable`s matching `key`, and yields a new capture
+    /// by extracting `result` from the combined fact tuple.
+    Join(JoinOp),
 }
 
 impl Plan {
@@ -80,6 +85,43 @@ impl Plan {
     /// match `kept`.
     pub fn project(input: Plan, kept: &[MetaVar]) -> Result<Self, &'static str> {
         ProjectOp::make(input, kept)
+    }
+
+    /// Constructs a plan that joins the `inputs`'s tuples that have
+    /// equal values for `key`, and extracts `kept` metavars from the
+    /// result.
+    pub fn join(
+        inputs: Vec<Plan>,
+        key: &[MetaVar],
+        kept: &[MetaVar],
+    ) -> Result<Self, &'static str> {
+        JoinOp::make(inputs, key, kept)
+    }
+
+    /// Joins the input plans on their shared metavariables, while
+    /// yielding the union of their metavariables.
+    pub fn natural_join(inputs: Vec<Plan>) -> Result<Self, &'static str> {
+        if inputs.len() != 2 {
+            return Err("Only binary joins are currently supported.");
+        }
+
+        let input_vars: Vec<BTreeSet<MetaVar>> = inputs
+            .iter()
+            .map(|inp| inp.result.iter().cloned().collect())
+            .collect();
+
+        // The Join key is the intersection of the two inputs' variables.
+        let key: Vec<_> = input_vars[0]
+            .intersection(&input_vars[1])
+            .cloned()
+            .collect();
+        // The result is the union of the two inputs' variables.  The
+        // condition is more complex when there are more inputs: we
+        // can "keep" a variable if it appears in the join key (is in
+        // every input), or is in exactly one input.
+        let kept: Vec<_> = input_vars[0].union(&input_vars[1]).cloned().collect();
+
+        Self::join(inputs, &key, &kept)
     }
 }
 
@@ -139,6 +181,80 @@ impl ProjectOp {
     }
 }
 
+#[derive(Debug, Hash, Eq, PartialEq)]
+pub struct JoinOp {
+    inputs: Vec<Plan>,
+    key: Vec<MetaVar>,
+}
+
+impl JoinOp {
+    #[cfg(not(tarpaulin_include))]
+    pub fn inputs(&self) -> &[Plan] {
+        &self.inputs
+    }
+
+    #[cfg(not(tarpaulin_include))]
+    pub fn key(&self) -> &[MetaVar] {
+        &self.key
+    }
+
+    fn make(inputs: Vec<Plan>, key: &[MetaVar], kept: &[MetaVar]) -> Result<Plan, &'static str> {
+        if inputs.len() != 2 {
+            return Err("Only binary joins are currently supported.");
+        }
+
+        // Normalise the join key.
+        let join_key: BTreeSet<MetaVar> = key.iter().cloned().collect();
+
+        let input_shapes: Vec<Box<[MetaVar]>> = inputs
+            .iter()
+            .map(|inp| inp.result.clone().into_boxed_slice())
+            .collect();
+
+        let parsed = MultiProjection::new(&input_shapes, kept)?;
+
+        // Count the number of inputs in which each MetaVar appears:
+        // we must make sure join keys are present in all inputs, and
+        // other capture keys only present in one.
+        let mut counts = HashMap::<MetaVar, usize>::new();
+        for shape in input_shapes.iter() {
+            let unique: HashSet<MetaVar> = shape.iter().cloned().collect();
+            for mv in unique.iter().cloned() {
+                counts.entry(mv).and_modify(|x| *x += 1).or_insert(1);
+            }
+        }
+
+        // Make sure the join `key` is present in every input.
+        for mv in join_key.iter() {
+            if *counts.get(mv).unwrap_or(&0) != inputs.len() {
+                return Err("Join key not present in all inputs.");
+            }
+        }
+
+        // Make sure any value we keep that isn't in the join key
+        // only appears in exactly one input.
+        for mv in kept.iter() {
+            if join_key.contains(mv) {
+                continue;
+            }
+
+            match counts.get(mv) {
+                None => return Err("Kept key absent from inputs"),
+                Some(1) => (),
+                Some(_) => return Err("Non-join kept key appears in many inputs"),
+            }
+        }
+
+        Ok(Plan {
+            result: parsed.output().into(),
+            op: PlanOp::Join(JoinOp {
+                inputs,
+                key: join_key.iter().cloned().collect(),
+            }),
+        })
+    }
+}
+
 #[test]
 fn filter_happy_path() {
     use crate::ground::Variable;
@@ -192,4 +308,232 @@ fn project_missing_var() {
     ];
     let filter = Plan::filter(source, &pattern).expect("ok");
     assert!(Plan::project(filter, &[x.clone()]).is_err());
+}
+
+#[test]
+fn join_happy_path() {
+    let x = MetaVar::new("x");
+    let y = MetaVar::new("y");
+    let z = MetaVar::new("z");
+
+    let s1 = Source::new("foo", 2);
+    let s2 = Source::new("bar", 2);
+
+    let f1 = Plan::filter(
+        s1,
+        &[Element::Reference(x.clone()), Element::Reference(y.clone())],
+    )
+    .expect("ok");
+    let f2 = Plan::filter(
+        s2,
+        &[Element::Reference(y.clone()), Element::Reference(z.clone())],
+    )
+    .expect("ok");
+
+    let join = Plan::join(
+        vec![f1, f2],
+        &[y.clone()],
+        &[x.clone(), y.clone(), z.clone()],
+    )
+    .expect("ok");
+    assert_eq!(join.result(), &[x.clone(), y.clone(), z.clone()]);
+}
+
+#[test]
+fn join_missing_join_var_path() {
+    let x = MetaVar::new("x");
+    let y = MetaVar::new("y");
+    let z = MetaVar::new("z");
+
+    let s1 = Source::new("foo", 2);
+    let s2 = Source::new("bar", 2);
+
+    let f1 = Plan::filter(
+        s1,
+        &[Element::Reference(x.clone()), Element::Reference(y.clone())],
+    )
+    .expect("ok");
+    let f2 = Plan::filter(
+        s2,
+        &[Element::Reference(y.clone()), Element::Reference(z.clone())],
+    )
+    .expect("ok");
+
+    assert!(Plan::join(
+        vec![f1, f2],
+        &[x.clone(), y.clone()],
+        &[x.clone(), y.clone(), z.clone()],
+    )
+    .is_err());
+}
+
+#[test]
+fn join_missing_result_var_path() {
+    let x = MetaVar::new("x");
+    let y = MetaVar::new("y");
+    let z = MetaVar::new("z");
+
+    let s1 = Source::new("foo", 2);
+    let s2 = Source::new("bar", 2);
+
+    let f1 = Plan::filter(
+        s1,
+        &[Element::Reference(x.clone()), Element::Reference(y.clone())],
+    )
+    .expect("ok");
+    let f2 = Plan::filter(
+        s2,
+        &[Element::Reference(y.clone()), Element::Reference(x.clone())],
+    )
+    .expect("ok");
+
+    assert!(Plan::join(
+        vec![f1, f2],
+        &[x.clone(), y.clone()],
+        &[x.clone(), y.clone(), z.clone()],
+    )
+    .is_err());
+}
+
+#[test]
+fn join_non_binary_path() {
+    let x = MetaVar::new("x");
+    let y = MetaVar::new("y");
+    let z = MetaVar::new("z");
+
+    let s1 = Source::new("foo", 2);
+    let s2 = Source::new("bar", 2);
+    let s3 = Source::new("baz", 2);
+
+    let f1 = Plan::filter(
+        s1,
+        &[Element::Reference(x.clone()), Element::Reference(y.clone())],
+    )
+    .expect("ok");
+    let f2 = Plan::filter(
+        s2,
+        &[Element::Reference(z.clone()), Element::Reference(z.clone())],
+    )
+    .expect("ok");
+    let f3 = Plan::filter(
+        s3,
+        &[Element::Reference(y.clone()), Element::Reference(z.clone())],
+    )
+    .expect("ok");
+
+    assert!(Plan::join(
+        vec![f1, f2, f3],
+        &[x.clone(), y.clone()],
+        &[x.clone(), y.clone(), z.clone()],
+    )
+    .is_err());
+}
+
+#[test]
+fn join_bad_kept() {
+    let x = MetaVar::new("x");
+    let y = MetaVar::new("y");
+    let z = MetaVar::new("z");
+
+    let s1 = Source::new("foo", 2);
+    let s2 = Source::new("bar", 3);
+
+    let f1 = Plan::filter(
+        s1,
+        &[Element::Reference(x.clone()), Element::Reference(y.clone())],
+    )
+    .expect("ok");
+    let f2 = Plan::filter(
+        s2,
+        &[
+            Element::Reference(x.clone()),
+            Element::Reference(y.clone()),
+            Element::Reference(z.clone()),
+        ],
+    )
+    .expect("ok");
+
+    assert!(Plan::join(
+        vec![f1, f2],
+        &[x.clone()],
+        &[x.clone(), y.clone(), z.clone()],
+    )
+    .is_err());
+}
+
+#[test]
+fn natural_join_happy_path() {
+    let x = MetaVar::new("x");
+    let y = MetaVar::new("y");
+    let z = MetaVar::new("z");
+
+    let s1 = Source::new("foo", 2);
+    let s2 = Source::new("bar", 2);
+
+    let f1 = Plan::filter(
+        s1,
+        &[Element::Reference(x.clone()), Element::Reference(y.clone())],
+    )
+    .expect("ok");
+    let f2 = Plan::filter(
+        s2,
+        &[Element::Reference(y.clone()), Element::Reference(z.clone())],
+    )
+    .expect("ok");
+
+    let join = Plan::natural_join(vec![f1, f2]).expect("ok");
+    assert_eq!(join.result(), &[x.clone(), y.clone(), z.clone()]);
+}
+
+#[test]
+fn natural_join_cross_product() {
+    let x = MetaVar::new("x");
+    let y = MetaVar::new("y");
+    let z = MetaVar::new("z");
+
+    let s1 = Source::new("foo", 2);
+    let s2 = Source::new("bar", 2);
+
+    let f1 = Plan::filter(
+        s1,
+        &[Element::Reference(x.clone()), Element::Reference(y.clone())],
+    )
+    .expect("ok");
+    let f2 = Plan::filter(
+        s2,
+        &[Element::Reference(z.clone()), Element::Reference(z.clone())],
+    )
+    .expect("ok");
+
+    let join = Plan::natural_join(vec![f1, f2]).expect("ok");
+    assert_eq!(join.result(), &[x.clone(), y.clone(), z.clone()]);
+}
+
+#[test]
+fn natural_join_incorrect() {
+    let x = MetaVar::new("x");
+    let y = MetaVar::new("y");
+    let z = MetaVar::new("z");
+
+    let s1 = Source::new("foo", 2);
+    let s2 = Source::new("bar", 2);
+    let s3 = Source::new("baz", 2);
+
+    let f1 = Plan::filter(
+        s1,
+        &[Element::Reference(x.clone()), Element::Reference(y.clone())],
+    )
+    .expect("ok");
+    let f2 = Plan::filter(
+        s2,
+        &[Element::Reference(z.clone()), Element::Reference(z.clone())],
+    )
+    .expect("ok");
+    let f3 = Plan::filter(
+        s3,
+        &[Element::Reference(y.clone()), Element::Reference(z.clone())],
+    )
+    .expect("ok");
+
+    assert!(Plan::natural_join(vec![f1, f2, f3]).is_err());
 }
