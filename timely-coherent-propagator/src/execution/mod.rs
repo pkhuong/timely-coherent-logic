@@ -3,6 +3,7 @@
 mod sink;
 mod split_container;
 
+pub use sink::sink_all_collections;
 pub use sink::CaptureSink;
 pub use sink::CaptureWriter;
 pub use sink::FactSink;

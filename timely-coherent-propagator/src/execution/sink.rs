@@ -74,6 +74,38 @@ impl<S: 'static + Clone + Eq, D: Data + Eq + Hash, R: Semigroup> Sink<S, D, R> {
     }
 }
 
+pub type SinkMap<K, S, D, R, H> = HashMap<K, Sink<S, D, R>, H>;
+
+/// Adds all collections in `collections` to sinks in `out`; inserts
+/// new sinks as necessary.
+///
+/// # Errors
+///
+/// This functions returns `Err` when one of the collection's shape
+/// does not match that of the corresponding sink (which may have
+/// been inherited from another collection in `collections`).
+pub fn sink_all_collections<I, K, G, S, D, R, H: std::hash::BuildHasher>(
+    collections: I,
+    mut out: SinkMap<K, S, D, R, H>,
+) -> Result<SinkMap<K, S, D, R, H>, &'static str>
+where
+    I: IntoIterator<Item = (K, SplitCollection<G, S, D, R>)>,
+    G: Scope,
+    K: Clone + Hash + Eq,
+    S: 'static + Clone + Eq,
+    D: Data + Eq + Hash,
+    R: Semigroup,
+{
+    for (name, split) in collections {
+        let shape = &split.shape;
+        let sink = out.entry(name).or_insert_with(|| Sink::new(shape.clone()));
+
+        sink.writer().attach(&split)?;
+    }
+
+    Ok(out)
+}
+
 #[derive(Clone, Debug)]
 pub struct SinkWriter<S: 'static + Clone + Eq, D: Data + Eq + Hash, R: Semigroup = isize> {
     inner: std::sync::Arc<SinkImpl<S, D, R>>,
@@ -233,4 +265,60 @@ fn test_mismatch_path() {
         let source = FactCollection::new(1, foo.to_collection(scope));
         assert!(writer.attach(&source).is_err());
     });
+}
+
+#[test]
+fn test_sink_all_collections() {
+    use super::FactCollection;
+    use crate::ground::Fact;
+    use crate::ground::Variable;
+    use differential_dataflow::input::InputSession;
+    use std::collections::HashSet;
+
+    let sinks = timely::execute::example(move |scope| {
+        let mut foo = InputSession::new();
+        let mut bar = InputSession::new();
+
+        let source1 = FactCollection::new(1, foo.to_collection(scope));
+        let source2 = FactCollection::new(2, bar.to_collection(scope));
+
+        let mut sinks =
+            sink_all_collections([("foo".into(), source1)].iter().cloned(), HashMap::new())
+                .expect("ok");
+        sinks = sink_all_collections([("bar".into(), source2)].iter().cloned(), sinks).expect("ok");
+
+        foo.advance_to(0);
+        bar.advance_to(0);
+        for i in 1..10 {
+            foo.insert([Variable::new(i)].into());
+            bar.insert([Variable::new(i), Variable::new(i + 1)].into())
+        }
+
+        foo.flush();
+        bar.flush();
+        foo.advance_to(1);
+        bar.advance_to(1);
+
+        sinks
+    });
+
+    assert_eq!(
+        sinks.keys().cloned().collect::<HashSet<_>>(),
+        ["foo".into(), "bar".into()]
+            .iter()
+            .cloned()
+            .collect::<HashSet<String>>()
+    );
+    assert_eq!(
+        sinks.get("foo").expect("found").values::<HashSet<_>>(),
+        (1..10)
+            .map(|i| Fact::from_slice(&[Variable::new(i)]))
+            .collect()
+    );
+    assert_eq!(
+        sinks.get("bar").expect("found").values::<HashSet<_>>(),
+        (1..10)
+            .map(|i| Fact::from_slice(&[Variable::new(i), Variable::new(i + 1)]))
+            .collect()
+    );
 }
