@@ -24,8 +24,10 @@ impl PredicateFormula {
     /// Inserts all `MetaVars` in the pattern into `dst`.
     #[must_use]
     pub fn insert_metavars(&self, mut dst: BTreeSet<MetaVar>) -> BTreeSet<MetaVar> {
-        for Element::Reference(mv) in &self.pattern {
-            dst.insert(mv.clone());
+        for elt in &self.pattern {
+            if let Element::Reference(mv) = elt {
+                dst.insert(mv.clone());
+            }
         }
 
         dst
