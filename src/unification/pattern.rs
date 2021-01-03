@@ -5,11 +5,14 @@ use super::MetaVar;
 use crate::ground::{Capture, Fact, Variable};
 use std::convert::TryFrom;
 
-/// A match pattern (or template...) is a slice of references to
-/// metavariables.  When a reference appears multiple times, it must
-/// match against (be populated with) the same ground variable.
+/// A match pattern (or template...) is a slice of constant values and
+/// references to metavariables.  When a reference appears multiple
+/// times, it must match against (be populated with) the same ground
+/// variable.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum Element {
+    /// Constants must match the literal ground variable exactly.
+    Constant(Variable),
     /// References may match any ground variable, but references with
     /// the same metavariable must match the same ground variable.
     Reference(MetaVar),
@@ -33,10 +36,11 @@ where
 {
     template
         .iter()
-        .map(|Element::Reference(mv)| {
-            *environment
+        .map(|elt| match elt {
+            Element::Constant(var) => *var,
+            Element::Reference(mv) => *environment
                 .entry(mv.clone())
-                .or_insert_with(|| backfill(&mv))
+                .or_insert_with(|| backfill(&mv)),
         })
         .collect::<Vec<_>>()
         .into()
@@ -118,11 +122,19 @@ impl Template {
 }
 
 fn make_pattern(pattern: &[Element]) -> Pattern {
-    // Represent indices as u8 for density.
+    // Represent indices as u8 or u32 (when u8 would be padded anyway)
+    // for density.
+    let mut constants = Vec::<(u32, Variable)>::new();
     let mut match_variables = Vec::<MetaVar>::new();
 
-    for Element::Reference(mv) in pattern.iter() {
-        match_variables.push(mv.clone());
+    for (index, elt) in pattern.iter().enumerate() {
+        match elt {
+            Element::Constant(var) => constants.push((
+                u32::try_from(index).expect("Wide patterns not supported."),
+                *var,
+            )),
+            Element::Reference(mv) => match_variables.push(mv.clone()),
+        }
     }
 
     match_variables.sort();
@@ -132,12 +144,13 @@ fn make_pattern(pattern: &[Element]) -> Pattern {
     // the last is the destination index.
     let mut match_indices = Vec::<(u8, u8)>::new();
     for (src_index, elt) in pattern.iter().enumerate() {
-        let Element::Reference(mv) = elt;
-        let dst_index = match_variables.binary_search(mv).expect("must be found");
-        match_indices.push((
-            u8::try_from(src_index).expect("Wide source capture not supported"),
-            u8::try_from(dst_index).expect("Wide destination capture not supported"),
-        ));
+        if let Element::Reference(mv) = elt {
+            let dst_index = match_variables.binary_search(mv).expect("must be found");
+            match_indices.push((
+                u8::try_from(src_index).expect("Wide source capture not supported"),
+                u8::try_from(dst_index).expect("Wide destination capture not supported"),
+            ));
+        }
     }
 
     let num = pattern.len();
@@ -146,6 +159,11 @@ fn make_pattern(pattern: &[Element]) -> Pattern {
         let vars = fact.vars();
 
         assert_eq!(vars.len(), num);
+        for (index, expected) in constants.iter().copied() {
+            if vars[index as usize] != expected {
+                return None;
+            }
+        }
 
         let mut ret = Vec::<Variable>::with_capacity(match_size);
         ret.resize(match_size, Variable::uninit());
@@ -193,12 +211,16 @@ fn make_template(inp: &[MetaVar], pattern: &[Element]) -> Result<Template, &'sta
     let mut substitutions = Vec::<(u8, u8)>::new();
 
     for (index, elt) in pattern.iter().enumerate() {
-        let Element::Reference(mv) = elt;
-        let src_index = find_index(mv)?;
-        substitutions.push((
-            u8::try_from(src_index).expect("Wide source captures not supported"),
-            u8::try_from(index).expect("Wide destination predicates not supported"),
-        ));
+        match elt {
+            Element::Reference(mv) => {
+                let src_index = find_index(mv)?;
+                substitutions.push((
+                    u8::try_from(src_index).expect("Wide source captures not supported"),
+                    u8::try_from(index).expect("Wide destination predicates not supported"),
+                ));
+            }
+            Element::Constant(var) => base[index] = *var,
+        }
     }
 
     let expected_input_len = inp.len();
@@ -263,6 +285,48 @@ fn test_instantiate() {
 }
 
 #[test]
+fn test_instantiate_with_constant() {
+    use std::collections::HashMap;
+
+    let x = MetaVar::new("x");
+    let y = MetaVar::new("y");
+    let z = MetaVar::new("z");
+
+    let template = [
+        Element::Constant(Variable::new(1)),
+        Element::Reference(x.clone()),
+        Element::Reference(y.clone()),
+        Element::Reference(z.clone()),
+        Element::Reference(x.clone()),
+        Element::Reference(z.clone()),
+    ];
+
+    let mut env: HashMap<MetaVar, Variable> =
+        vec![(x.clone(), Variable::new(2)), (y.clone(), Variable::new(3))]
+            .into_iter()
+            .collect();
+
+    let mut created = Vec::<Variable>::new();
+
+    let mut backfill = |_mv: &MetaVar| {
+        let var = Variable::new(10);
+        created.push(var);
+        var
+    };
+
+    let instance = instantiate_template(&template, &mut env, &mut backfill);
+    assert_eq!(
+        instance,
+        [1, 2, 3, 10, 2, 10]
+            .iter()
+            .map(|i| Variable::new(*i))
+            .collect::<Vec<_>>()
+            .into()
+    );
+    assert_eq!(created, vec![Variable::new(10)]);
+}
+
+#[test]
 fn test_pattern_match_happy_path() {
     use super::Projection;
 
@@ -294,6 +358,37 @@ fn test_pattern_match_happy_path() {
 }
 
 #[test]
+fn test_pattern_match_with_constant_happy_path() {
+    use super::Projection;
+
+    let x = MetaVar::new("x");
+    let y = MetaVar::new("y");
+
+    let pattern = Pattern::new(&[
+        Element::Constant(Variable::new(1)),
+        Element::Reference(x.clone()),
+        Element::Reference(y.clone()),
+    ])
+    .expect("ok");
+
+    assert_eq!(pattern.input_len(), 3);
+    assert_eq!(pattern.output().len(), 2);
+
+    let extract_x = Projection::new(pattern.output(), &[x.clone()]).expect("ok");
+    let extract_y = Projection::new(pattern.output(), &[y.clone()]).expect("ok");
+
+    let args: Fact = [1, 2, 3]
+        .iter()
+        .map(|i| Variable::new(*i))
+        .collect::<Vec<_>>()
+        .into();
+    let extracted = pattern.try_match(&args).expect("matches");
+
+    assert_eq!(extract_x.apply(&extracted), [Variable::new(2)].into());
+    assert_eq!(extract_y.apply(&extracted), [Variable::new(3)].into());
+}
+
+#[test]
 fn test_pattern_match_mismatch() {
     let x = MetaVar::new("x");
     let y = MetaVar::new("y");
@@ -311,6 +406,26 @@ fn test_pattern_match_mismatch() {
         .collect::<Vec<_>>()
         .into();
     assert_eq!(pattern.try_match(&args2), None);
+}
+
+#[test]
+fn test_pattern_match_mismatch_constant() {
+    let x = MetaVar::new("x");
+    let y = MetaVar::new("y");
+
+    let pattern = Pattern::new(&[
+        Element::Constant(Variable::new(1)),
+        Element::Reference(x.clone()),
+        Element::Reference(y.clone()),
+    ])
+    .expect("ok");
+
+    let args: Fact = [2, 2, 3]
+        .iter()
+        .map(|i| Variable::new(*i))
+        .collect::<Vec<_>>()
+        .into();
+    assert_eq!(pattern.try_match(&args), None);
 }
 
 #[test]
@@ -343,6 +458,44 @@ fn test_template_happy_path() {
     assert_eq!(
         template.apply(&[Variable::new(5), Variable::new(1)].into()),
         [5, 1, 5]
+            .iter()
+            .map(|i| Variable::new(*i))
+            .collect::<Vec<_>>()
+            .into()
+    );
+}
+
+#[test]
+fn test_template_with_constant_happy_path() {
+    let x = MetaVar::new("x");
+    let y = MetaVar::new("y");
+
+    let template = Template::new(
+        &[x.clone(), y.clone()],
+        &[
+            Element::Constant(Variable::new(1)),
+            Element::Reference(x.clone()),
+            Element::Reference(y.clone()),
+            Element::Reference(x.clone()),
+        ],
+    )
+    .expect("ok");
+
+    assert_eq!(template.input(), &[x.clone(), y.clone()]);
+    assert_eq!(template.output_len(), 4);
+
+    assert_eq!(
+        template.apply(&[Variable::new(2), Variable::new(3)].into()),
+        [1, 2, 3, 2]
+            .iter()
+            .map(|i| Variable::new(*i))
+            .collect::<Vec<_>>()
+            .into()
+    );
+
+    assert_eq!(
+        template.apply(&[Variable::new(5), Variable::new(1)].into()),
+        [1, 5, 1, 5]
             .iter()
             .map(|i| Variable::new(*i))
             .collect::<Vec<_>>()
