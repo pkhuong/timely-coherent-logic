@@ -55,6 +55,13 @@ pub enum PlanOp {
     /// facts by the `Variable`s matching `key`, and yields a new capture
     /// by extracting `result` from the combined fact tuple.
     Join(JoinOp),
+    /// An Antijoin operator is defined by a list of metavars `key`;
+    /// an operator accepts a first "minuend" operator and a list of
+    /// "subtrahend" operators, and yields all items from the minuend
+    /// that do not match anything in the minuends.
+    ///
+    /// The subtrahends' shapes must all match the `key`.
+    Antijoin(AntijoinOp),
 }
 
 impl Plan {
@@ -153,6 +160,21 @@ impl Plan {
         let kept: Vec<_> = input_vars[0].union(&input_vars[1]).cloned().collect();
 
         Self::join(inputs, &key, &kept)
+    }
+
+    /// Yields values from the minuend, minus any whose `key` matches
+    /// the subtrahends.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the subtrahends' shape does not match `key`,
+    /// or `key` cannot be constructed from the `minuend`'s shape.
+    pub fn antijoin(
+        minuend: Plan,
+        key: &[MetaVar],
+        subtrahends: Vec<Plan>,
+    ) -> Result<Plan, &'static str> {
+        AntijoinOp::make(minuend, key, subtrahends)
     }
 }
 
@@ -286,6 +308,56 @@ impl JoinOp {
             op: PlanOp::Join(JoinOp {
                 inputs,
                 key: join_key.iter().cloned().collect(),
+            }),
+        })
+    }
+}
+
+#[derive(Debug, Hash, Eq, PartialEq)]
+pub struct AntijoinOp {
+    minuend: Box<Plan>,
+    key: Vec<MetaVar>,
+    subtrahends: Vec<Plan>,
+}
+
+impl AntijoinOp {
+    #[cfg(not(tarpaulin_include))]
+    #[must_use]
+    pub fn minuend(&self) -> &Plan {
+        &self.minuend
+    }
+
+    #[cfg(not(tarpaulin_include))]
+    #[must_use]
+    pub fn key(&self) -> &[MetaVar] {
+        &self.key
+    }
+
+    #[cfg(not(tarpaulin_include))]
+    #[must_use]
+    pub fn subtrahends(&self) -> &[Plan] {
+        &self.subtrahends
+    }
+
+    fn make(minuend: Plan, key: &[MetaVar], subtrahends: Vec<Plan>) -> Result<Plan, &'static str> {
+        if subtrahends
+            .iter()
+            .any(|subtrahend| subtrahend.result() != key)
+        {
+            return Err("Subtrahend result shape does not match key.");
+        }
+
+        let key_set: BTreeSet<_> = key.iter().cloned().collect();
+        if !key_set.is_subset(&minuend.result().iter().cloned().collect()) {
+            return Err("Minuend result does not include match key.");
+        }
+
+        Ok(Plan {
+            result: minuend.result().into(),
+            op: PlanOp::Antijoin(AntijoinOp {
+                minuend: Box::new(minuend),
+                key: key.to_vec(),
+                subtrahends,
             }),
         })
     }
@@ -480,6 +552,84 @@ fn join_bad_kept() {
         &[x.clone(), y.clone(), z.clone()],
     )
     .is_err());
+}
+
+#[test]
+fn antijoin_happy_path() {
+    let x = MetaVar::new("x");
+    let y = MetaVar::new("y");
+
+    let s = Source::new("foo", 2);
+    let minuend = Plan::filter(
+        s.clone(),
+        &[Element::Reference(x.clone()), Element::Reference(y.clone())],
+    )
+    .expect("ok");
+    let subtrahend = Plan::filter(
+        s.clone(),
+        &[Element::Reference(y.clone()), Element::Reference(y.clone())],
+    )
+    .expect("ok");
+
+    let antijoin = Plan::antijoin(minuend, &[y.clone()], vec![subtrahend]).expect("success");
+    assert_eq!(antijoin.result(), vec![x.clone(), y.clone()]);
+}
+
+#[test]
+fn antijoin_minuend_missing_key() {
+    let x = MetaVar::new("x");
+    let y = MetaVar::new("y");
+
+    let s = Source::new("foo", 2);
+    let minuend = Plan::filter(
+        s.clone(),
+        &[Element::Reference(x.clone()), Element::Reference(x.clone())],
+    )
+    .expect("ok");
+    let subtrahend = Plan::filter(
+        s.clone(),
+        &[Element::Reference(y.clone()), Element::Reference(y.clone())],
+    )
+    .expect("ok");
+    assert!(Plan::antijoin(minuend, &[y.clone()], vec![subtrahend]).is_err());
+}
+
+#[test]
+fn antijoin_subtrahend_missing_key() {
+    let x = MetaVar::new("x");
+    let y = MetaVar::new("y");
+
+    let s = Source::new("foo", 2);
+    let minuend = Plan::filter(
+        s.clone(),
+        &[Element::Reference(x.clone()), Element::Reference(y.clone())],
+    )
+    .expect("ok");
+    let subtrahend = Plan::filter(
+        s.clone(),
+        &[Element::Reference(x.clone()), Element::Reference(x.clone())],
+    )
+    .expect("ok");
+    assert!(Plan::antijoin(minuend, &[y.clone()], vec![subtrahend]).is_err());
+}
+
+#[test]
+fn antijoin_subtrahend_extra_key() {
+    let x = MetaVar::new("x");
+    let y = MetaVar::new("y");
+
+    let s = Source::new("foo", 2);
+    let minuend = Plan::filter(
+        s.clone(),
+        &[Element::Reference(x.clone()), Element::Reference(y.clone())],
+    )
+    .expect("ok");
+    let subtrahend = Plan::filter(
+        s.clone(),
+        &[Element::Reference(x.clone()), Element::Reference(y.clone())],
+    )
+    .expect("ok");
+    assert!(Plan::antijoin(minuend, &[x.clone()], vec![subtrahend]).is_err());
 }
 
 #[test]
