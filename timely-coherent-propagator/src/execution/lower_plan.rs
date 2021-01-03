@@ -2,6 +2,7 @@
 //! differential dataflow graph.
 use super::{CaptureCollection, FactCollection};
 use crate::ground::Capture;
+use crate::matching::plan::AntijoinOp;
 use crate::matching::plan::FilterOp;
 use crate::matching::plan::JoinOp;
 use crate::matching::plan::Plan;
@@ -43,7 +44,7 @@ where
     G::Timestamp: Lattice + Ord,
     Injector: FnMut(&mut G, Vec<Capture>) -> Collection<G, Capture>,
 {
-    use crate::matching::plan::PlanOp::{Constant, Filter, Join, Project};
+    use crate::matching::plan::PlanOp::{Antijoin, Constant, Filter, Join, Project};
 
     let planned_shape = plan.result();
     let result = match plan.op() {
@@ -51,6 +52,7 @@ where
         Filter(op) => lower_filter(scope, injector, op, inputs),
         Project(op) => lower_project(scope, injector, planned_shape, op, inputs),
         Join(op) => lower_join(scope, injector, planned_shape, op, inputs),
+        Antijoin(op) => lower_antijoin(scope, injector, op, inputs),
     }?;
 
     // If the result's shape does not match the plan, something went
@@ -182,6 +184,59 @@ where
         final_projection.from_pair(x, y)
     });
     Ok(CaptureCollection::new(final_shape, collection))
+}
+
+fn lower_antijoin<G: Scope, Injector, H: std::hash::BuildHasher>(
+    scope: &mut G,
+    injector: &mut Injector,
+    op: &AntijoinOp,
+    inputs: &FactMap<G, H>,
+) -> PlanResult<G>
+where
+    G::Timestamp: Lattice + Ord,
+    Injector: FnMut(&mut G, Vec<Capture>) -> Collection<G, Capture>,
+{
+    use differential_dataflow::collection::concatenate;
+    use differential_dataflow::operators::Threshold;
+
+    // All the subtrahends must have exactly the same shape as the
+    // antijoin key.
+    let subtrahend_nodes = op
+        .subtrahends()
+        .iter()
+        .map(|plan| lower_matching_plan(scope, injector, plan, inputs))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    // This condition is checked in the plan constructor.
+    if subtrahend_nodes.iter().any(|node| node.shape != op.key()) {
+        #[cfg(not(tarpaulin_include))]
+        return Err("Subtrahend shape does not match antijoin key.");
+    }
+
+    let minuend_node = lower_matching_plan(scope, injector, op.minuend(), inputs)?;
+
+    // Make sure we can extract the antijoin key from the minuend's data.
+    let project = unification::Projection::new(&minuend_node.shape, op.key())?;
+
+    // We'll want to remove any record in `minuend` that matches at
+    // least one of the subtrahends.  Given the semantics of antijoin
+    // (minuend_count -= subtrahend_count * minuend_count), we want
+    // to apply `distinct()` before antijoining.
+    let merged_subtrahend = concatenate(
+        scope,
+        subtrahend_nodes.into_iter().map(|node| node.container),
+    )
+    .distinct();
+
+    // Tag each of the minuend's records with its projected join key.
+    let minuend = minuend_node
+        .container
+        .map(move |record| (project.apply(&record), record));
+
+    // Take the difference, and untag.
+    let difference = minuend.antijoin(&merged_subtrahend).map(|tagged| tagged.1);
+
+    Ok(CaptureCollection::new(minuend_node.shape, difference))
 }
 
 #[test]
@@ -440,6 +495,146 @@ fn test_join_happy_path() {
             .iter()
             .cloned()
             .map(|(x, y, z)| [Variable::new(x), Variable::new(y), Variable::new(z)].into())
+            .collect()
+    );
+}
+
+#[test]
+fn test_antijoin_happy_path() {
+    use super::CaptureSink;
+    use crate::ground::Variable;
+    use crate::matching::plan::Source;
+    use crate::unification::Element;
+    use differential_dataflow::input::InputSession;
+    use std::collections::HashSet;
+
+    let x = MetaVar::new("x");
+    let y = MetaVar::new("y");
+
+    let p1 = Plan::filter(
+        Source::new("foo", 2),
+        &[Element::Reference(x.clone()), Element::Reference(y.clone())],
+    )
+    .expect("ok");
+    let p2 = Plan::filter(Source::new("bar", 1), &[Element::Reference(x.clone())]).expect("ok");
+    let antijoin = Plan::antijoin(p1, &[x.clone()], vec![p2]).expect("ok");
+
+    let sink = CaptureSink::new(antijoin.result().into());
+    let writer = sink.writer();
+
+    timely::execute::example(move |scope| {
+        let mut foo = InputSession::new();
+        let mut bar = InputSession::new();
+
+        let sources = vec![
+            (
+                "foo".into(),
+                FactCollection::new(2, foo.to_collection(scope)),
+            ),
+            (
+                "bar".into(),
+                FactCollection::new(1, bar.to_collection(scope)),
+            ),
+        ]
+        .into_iter()
+        .collect::<std::collections::HashMap<String, _>>();
+
+        let captures =
+            lower_matching_plan(scope, &mut default_injector, &antijoin, &sources).expect("ok");
+        writer.attach(&captures).expect("ok");
+
+        foo.advance_to(0);
+        for (x, y) in &[(1, 2), (3, 4), (5, 2), (6, 7)] {
+            foo.insert([Variable::new(*x), Variable::new(*y)].into());
+        }
+
+        foo.flush();
+        foo.advance_to(1);
+
+        for x in &[1, 5] {
+            bar.insert([Variable::new(*x)].into());
+        }
+
+        bar.flush();
+        bar.advance_to(1);
+    });
+
+    assert_eq!(
+        sink.values::<HashSet<_>>(),
+        [(3, 4), (6, 7)]
+            .iter()
+            .cloned()
+            .map(|(x, y)| [Variable::new(x), Variable::new(y)].into())
+            .collect()
+    );
+}
+
+#[test]
+fn test_antijoin_subtrahend_wrong_shape() {
+    use super::CaptureSink;
+    use crate::ground::Variable;
+    use crate::matching::plan::Source;
+    use crate::unification::Element;
+    use differential_dataflow::input::InputSession;
+    use std::collections::HashSet;
+
+    let x = MetaVar::new("x");
+    let y = MetaVar::new("y");
+
+    let p1 = Plan::filter(
+        Source::new("foo", 2),
+        &[Element::Reference(x.clone()), Element::Reference(y.clone())],
+    )
+    .expect("ok");
+    let p2 = Plan::filter(Source::new("bar", 1), &[Element::Reference(x.clone())]).expect("ok");
+    let antijoin = Plan::antijoin(p1, &[x.clone()], vec![p2]).expect("ok");
+
+    let sink = CaptureSink::new(antijoin.result().into());
+    let writer = sink.writer();
+
+    timely::execute::example(move |scope| {
+        let mut foo = InputSession::new();
+        let mut bar = InputSession::new();
+
+        let sources = vec![
+            (
+                "foo".into(),
+                FactCollection::new(2, foo.to_collection(scope)),
+            ),
+            (
+                "bar".into(),
+                FactCollection::new(1, bar.to_collection(scope)),
+            ),
+        ]
+        .into_iter()
+        .collect::<std::collections::HashMap<String, _>>();
+
+        let captures =
+            lower_matching_plan(scope, &mut default_injector, &antijoin, &sources).expect("ok");
+        writer.attach(&captures).expect("ok");
+
+        foo.advance_to(0);
+        for (x, y) in &[(1, 2), (3, 4), (5, 2), (6, 7)] {
+            foo.insert([Variable::new(*x), Variable::new(*y)].into());
+        }
+
+        foo.flush();
+        foo.advance_to(1);
+
+        for x in &[1, 5] {
+            bar.insert([Variable::new(*x)].into());
+        }
+
+        bar.flush();
+        bar.advance_to(1);
+    });
+
+    assert_eq!(
+        sink.values::<HashSet<_>>(),
+        [(3, 4), (6, 7)]
+            .iter()
+            .cloned()
+            .map(|(x, y)| [Variable::new(x), Variable::new(y)].into())
             .collect()
     );
 }
