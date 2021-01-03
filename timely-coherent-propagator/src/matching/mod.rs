@@ -40,3 +40,4 @@ pub use expression::Constraint;
 pub use expression::PredicateFormula;
 pub use plan::Plan;
 pub use planner::plan_constraint;
+pub use planner::plan_sequent;
