@@ -1,0 +1,8 @@
+[package]
+name = "satumerator"
+version = "0.1.0"
+authors = ["Paul Khuong <pvk@pvk.ca>"]
+edition = "2018"
+
+[dependencies]
+cryptominisat = "5.8.0"
