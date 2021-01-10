@@ -1,0 +1,13 @@
+[package]
+name = "satumerator"
+version = "0.1.0"
+authors = ["Paul Khuong <pvk@pvk.ca>"]
+description = "Exhaustive enumeration library based on SAT."
+license = "MIT"
+repository = "https://github.com/pkhuong/timely-coherent-logic"
+keywords = ["SAT", "combinatorial search"]
+categories = ["mathematics"]
+edition = "2018"
+
+[dependencies]
+cryptominisat = "5.8.0"
