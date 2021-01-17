@@ -7,14 +7,16 @@ use super::FathomedRegion;
 use super::StateAtom;
 use cryptominisat::Lbool;
 use cryptominisat::Lit;
+use std::collections::BTreeSet;
 use std::collections::HashSet;
 
 /// The `AssignmentReductionPolicy` determines how we want to handle a
-/// "gap" witness.  For now, the only thing we can do is to return
-/// that witness as is.
+/// "gap" witness or any other partial assignment that is (should be)
+/// disjoint from the nogoods.
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub enum AssignmentReductionPolicy {
-    /// Don't reduce at all.
+    /// Don't reduce at all, only check that the input is disjoint
+    /// from the nogoods and return it as is.
     Noop,
 }
 
@@ -71,6 +73,37 @@ impl<A: StateAtom> Impl<A> {
         }
     }
 
+    /// Determines if `assignment` is such that it and all of its
+    /// (valid) extensions aren't covered (forbidden) by a nogood.
+    ///
+    /// On success, applies the reduction policy to return a smaller
+    /// (still disjoint) assignment.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` when the initial assignment overlaps with the
+    /// nogoods, or when the underlying SAT solver times out.
+    pub fn disjoint_from_nogoods(
+        &mut self,
+        assignment: Vec<(A, bool)>,
+        _reduction_policy: AssignmentReductionPolicy,
+    ) -> Result<Vec<(A, bool)>, &'static str> {
+        match self.sat_state.tseitin_checker().1 {
+            None => Ok(vec![]),
+            Some(output) => {
+                // Current set of non-mandatory assumptions we're
+                // trying to reduce.
+                let candidates = build_assumptions(&mut self.sat_state, assignment);
+                let solver = self.sat_state.tseitin_checker().0;
+
+                // Confirm that the candidates are disjoint from the
+                // nogoods.
+                find_conflict(solver, output, candidates.clone())?;
+                Ok(literals_to_assignment(&mut self.sat_state, candidates))
+            }
+        }
+    }
+
     /// Refines the domain to take into account the "pick one of k"
     /// choice `constraint`.
     pub fn declare_choice(&mut self, constraint: ChoiceConstraint<A>) {
@@ -121,6 +154,88 @@ impl<A: StateAtom> Impl<A> {
     }
 }
 
+/// Builds an initial assumption vector for `assignment`.
+fn build_assumptions<A: StateAtom>(
+    sat_state: &mut SolverState<A>,
+    assignment: Vec<(A, bool)>,
+) -> Vec<Lit> {
+    let mut assumptions = Vec::with_capacity(assignment.len());
+    for (atom, value) in assignment {
+        let (lit, fresh) = sat_state.ensure_var(VariableMeaning::Atom(atom));
+
+        #[cfg(not(tarpaulin_include))]
+        if fresh {
+            println!("WARNING: unknown variable found in assignment.");
+            continue;
+        }
+
+        assumptions.push(if value { lit } else { !lit });
+    }
+
+    assumptions
+}
+
+/// Attempts to reduce `assumptions`, assuming that `nogood_output` is
+/// true.
+///
+/// Returns a subset of the assumptions literals that does not overlap
+/// with the nogoods either.
+///
+/// # Errors
+///
+/// Returns `Err` if we failed to definitely find a conflict; in that
+/// case, the `assumptions` may or may not overlap with the nogoods.
+fn find_conflict(
+    tseitin_solver: &mut cryptominisat::Solver,
+    nogood_output: Lit,
+    mut assumptions: Vec<Lit>,
+) -> Result<BTreeSet<Lit>, &'static str> {
+    // The output variable is true whenever one of the nogood is
+    // violated.  We want to force that to happen.
+    assumptions.push(nogood_output);
+
+    match tseitin_solver.solve_with_assumptions(&assumptions) {
+        // If we can find a violation, or we don't know,
+        // assume the assignment can intersect with
+        // nogoods.
+        Lbool::True => Err("Assumptions overlap with nogoods"),
+        #[cfg(not(tarpaulin_include))]
+        Lbool::Undef => Err("Conflict checking timed out"),
+        Lbool::False =>
+        // The conflict list only includes variables in the
+        // assumption, but reports the opposite of their value in
+        // the assumption: a conflict is a clause (a nogood
+        // internal to the SAT solver) learned from the constraint
+        // set, that happens to contradict the assumptions.
+        //
+        // The conflict is of the form "any solution that includes
+        // all of these assignments is invalid;" since it
+        // contradicts the assumption, it can only contain
+        // literals that are also in the assumption, and each of
+        // these literals must have a truth value opposite to that
+        // in the assumption.
+        //
+        // That's why we complement the conflict literal before
+        // returning
+        {
+            Ok(tseitin_solver.get_conflict().iter().map(|x| !*x).collect())
+        }
+    }
+}
+
+fn literals_to_assignment<A: StateAtom>(
+    sat_state: &mut SolverState<A>,
+    literals: Vec<Lit>,
+) -> Vec<(A, bool)> {
+    literals
+        .into_iter()
+        .filter_map(|lit| match sat_state.meaning(lit) {
+            Some(VariableMeaning::Atom(atom)) => Some((atom.clone(), !lit.isneg())),
+            _ => None,
+        })
+        .collect()
+}
+
 #[test]
 fn test_smoke() {
     // Create an empty solver. We should find a trivial witness.
@@ -128,6 +243,13 @@ fn test_smoke() {
     assert_eq!(
         state.gap_witness(AssignmentReductionPolicy::Noop),
         Some(vec![])
+    );
+
+    // And we should be able to confirm that the empty assignment is
+    // safe to explore without wasting work.
+    assert_eq!(
+        state.disjoint_from_nogoods(vec![], AssignmentReductionPolicy::Noop),
+        Ok(vec![])
     );
 }
 
@@ -144,6 +266,34 @@ fn test_nogood() {
         .gap_witness(AssignmentReductionPolicy::Noop)
         .expect("has witness");
     assert_eq!(witness, vec![("x".into(), false), ("y".into(), false)]);
+    // And the witness should be disjoint.
+    assert_eq!(
+        state
+            .disjoint_from_nogoods(witness.clone(), AssignmentReductionPolicy::Noop)
+            .expect("ok"),
+        witness
+    );
+}
+
+#[test]
+fn test_nogood_overlap() {
+    // Add nogoods for `x = true` and `y = true`.
+    // We should find that `x = true` overlaps with the nogoods.
+    let mut state = Impl::<String>::new();
+
+    state.add_nogood(FathomedRegion::new(vec!["x".into()]));
+    state.add_nogood(FathomedRegion::new(vec!["y".into()]));
+
+    assert!(state
+        .disjoint_from_nogoods(vec![("x".into(), true)], AssignmentReductionPolicy::Noop)
+        .is_err());
+    // And should also reject any extension.
+    assert!(state
+        .disjoint_from_nogoods(
+            vec![("x".into(), true), ("y".into(), false)],
+            AssignmentReductionPolicy::Noop
+        )
+        .is_err());
 }
 
 #[test]
@@ -173,8 +323,8 @@ fn test_nogood_with_domain() {
 
     state.add_nogood(FathomedRegion::new(vec!["x".into()]));
     state.add_nogood(FathomedRegion::new(vec!["y".into()]));
-
     state.declare_choice(ChoiceConstraint::new(vec!["x".into(), "y".into()]));
+
     assert_eq!(state.gap_witness(AssignmentReductionPolicy::Noop), None);
 }
 
@@ -188,9 +338,9 @@ fn test_nogood_with_duplicate_domain() {
 
     state.add_nogood(FathomedRegion::new(vec!["x".into()]));
     state.add_nogood(FathomedRegion::new(vec!["y".into()]));
+    state.declare_choice(ChoiceConstraint::new(vec!["x".into(), "y".into()]));
+    state.declare_choice(ChoiceConstraint::new(vec!["x".into(), "y".into()]));
 
-    state.declare_choice(ChoiceConstraint::new(vec!["x".into(), "y".into()]));
-    state.declare_choice(ChoiceConstraint::new(vec!["x".into(), "y".into()]));
     assert_eq!(state.gap_witness(AssignmentReductionPolicy::Noop), None);
 }
 
@@ -205,9 +355,7 @@ fn test_nogood_with_multiple_domains() {
     let mut state = Impl::<String>::new();
 
     state.declare_choice(ChoiceConstraint::new(vec!["x".into(), "y".into()]));
-
     state.declare_choice(ChoiceConstraint::new(vec!["x".into(), "z".into()]));
-
     state.add_nogood(FathomedRegion::new(vec!["x".into()]));
 
     let witness = state
@@ -216,6 +364,13 @@ fn test_nogood_with_multiple_domains() {
     assert_eq!(
         witness,
         vec![("x".into(), false), ("y".into(), true), ("z".into(), true)]
+    );
+    // And the witness should be disjoint.
+    assert_eq!(
+        state
+            .disjoint_from_nogoods(witness.clone(), AssignmentReductionPolicy::Noop)
+            .expect("ok"),
+        witness
     );
 
     // Now let's claim we also don't like `y = z = true`.
