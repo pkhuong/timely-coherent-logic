@@ -1,6 +1,7 @@
 //!
 use super::gadgets;
 use super::solver_state::SolverState;
+use super::solver_state::VariableMeaning;
 use super::ChoiceConstraint;
 use super::FathomedRegion;
 use super::StateAtom;
@@ -39,8 +40,8 @@ impl<A: StateAtom> Impl<A> {
     ///
     /// A `None` means that the search has been completed.
     pub fn gap_witness(&mut self, _policy: AssignmentReductionPolicy) -> Option<Vec<(A, bool)>> {
-        use super::solver_state::VariableMeaning::Atom;
         use std::convert::TryInto;
+        use VariableMeaning::Atom;
 
         match self.sat_state.exhaustive_checker().solve() {
             Lbool::True => {
@@ -81,10 +82,13 @@ impl<A: StateAtom> Impl<A> {
             .sat_state
             .atoms_vars(constraint.options.iter().cloned());
 
-        let solver = self.sat_state.exhaustive_checker();
-        gadgets::add_at_least_one_constraint(solver, &vars);
-        gadgets::add_at_most_one_constraint(solver, &vars);
+        let add_constraint = |solver: &mut _| {
+            gadgets::add_at_least_one_constraint(solver, &vars);
+            gadgets::add_at_most_one_constraint(solver, &vars);
+        };
 
+        add_constraint(self.sat_state.exhaustive_checker());
+        add_constraint(self.sat_state.tseitin_checker().0);
         self.domain.insert(constraint);
     }
 
@@ -99,6 +103,19 @@ impl<A: StateAtom> Impl<A> {
             .atoms_vars(region.partial_assignment.iter().cloned());
 
         gadgets::add_nogood(self.sat_state.exhaustive_checker(), &vars);
+        let (output, fresh) = self
+            .sat_state
+            .ensure_var(VariableMeaning::TseitinOutput(region.clone()));
+        assert!(fresh);
+        gadgets::add_tseitin_nogood(self.sat_state.tseitin_checker().0, output, &vars);
+        self.sat_state
+            .update_tseitin_output(|solver, current| match current {
+                Some((fresh, acc)) => {
+                    gadgets::add_tseitin_or(solver, fresh, acc, output);
+                    fresh
+                }
+                None => output,
+            });
 
         self.clauses.insert(region);
     }
