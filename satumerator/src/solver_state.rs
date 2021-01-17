@@ -11,6 +11,7 @@
 //! tighter, more efficient, encoding that only uses regular
 //! incremental solves, without assumptions.
 use super::StateAtom;
+use crate::FathomedRegion;
 use cryptominisat::Lit;
 use cryptominisat::Solver;
 use std::collections::HashMap;
@@ -20,12 +21,15 @@ use std::hash::Hash;
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum VariableMeaning<A: StateAtom> {
     Atom(A),
+    TseitinOutput(FathomedRegion<A>),
 }
 
 pub struct SolverState<A: StateAtom> {
     from_id: Vec<Option<VariableMeaning<A>>>,
     to_id: HashMap<VariableMeaning<A>, Lit>,
     exhaustive_checker: Solver,
+    tseitin_output: Option<Lit>,
+    tseitin_checker: Solver,
 }
 
 /// A `SolverState` owns a `CryptoMiniSat` solver, and maintains a
@@ -39,6 +43,8 @@ impl<A: StateAtom> SolverState<A> {
             from_id: Vec::new(),
             to_id: HashMap::new(),
             exhaustive_checker: Solver::new(),
+            tseitin_output: None,
+            tseitin_checker: Solver::new(),
         }
     }
 
@@ -81,12 +87,41 @@ impl<A: StateAtom> SolverState<A> {
         &mut self.exhaustive_checker
     }
 
+    /// Returns the Tseitin encoder solver, and its current output
+    /// variable.
+    pub fn tseitin_checker(&mut self) -> (&mut Solver, Option<Lit>) {
+        (&mut self.tseitin_checker, self.tseitin_output)
+    }
+
+    /// Updates the Tseitin encoded output variable.
+    ///
+    /// If there is currently no output variable, the `update`
+    /// function is called with `None`, and must return the new
+    /// output.
+    ///
+    /// Otherwise, `update` is called with `(fresh_var,
+    /// current_output)`, and must return the new output.
+    pub fn update_tseitin_output<F>(&mut self, update: F)
+    where
+        F: FnOnce(&mut Solver, Option<(Lit, Lit)>) -> Lit,
+    {
+        self.tseitin_output = Some(match self.tseitin_output {
+            Some(acc) => {
+                let fresh = self.new_var(None);
+                update(&mut self.tseitin_checker, Some((fresh, acc)))
+            }
+            None => update(&mut self.tseitin_checker, None),
+        });
+    }
+
     /// Creates a new variable in both solvers, and registers it in
     /// `from_id`.
     fn new_var(&mut self, wanted: Option<VariableMeaning<A>>) -> Lit {
         self.check_rep();
 
         let var = self.exhaustive_checker.new_var();
+        let tseitin_var = self.tseitin_checker.new_var();
+        assert_eq!(var, tseitin_var);
         assert_eq!(var.var() as usize, self.from_id.len());
 
         self.from_id.push(wanted);
@@ -98,6 +133,7 @@ impl<A: StateAtom> SolverState<A> {
     fn check_rep(&self) {
         assert!(self.from_id.len() >= self.to_id.len());
         assert_eq!(self.from_id.len(), self.exhaustive_checker.nvars() as usize);
+        assert_eq!(self.from_id.len(), self.tseitin_checker.nvars() as usize);
     }
 }
 
