@@ -1,6 +1,7 @@
 //!
 use super::gadgets;
 use super::solver_state::SolverState;
+use super::ChoiceConstraint;
 use super::FathomedRegion;
 use super::StateAtom;
 use cryptominisat::Lbool;
@@ -20,6 +21,7 @@ pub struct Impl<A: StateAtom> {
     sat_state: SolverState<A>,
     // nogood clauses.
     clauses: HashSet<FathomedRegion<A>>,
+    domain: HashSet<ChoiceConstraint<A>>,
 }
 
 impl<A: StateAtom> Impl<A> {
@@ -27,6 +29,7 @@ impl<A: StateAtom> Impl<A> {
         Self {
             sat_state: SolverState::new(),
             clauses: HashSet::new(),
+            domain: HashSet::new(),
         }
     }
 
@@ -65,6 +68,24 @@ impl<A: StateAtom> Impl<A> {
             #[cfg(not(tarpaulin_include))]
             Lbool::Undef => panic!("Exhaustive check timed out without time limit."),
         }
+    }
+
+    /// Refines the domain to take into account the "pick one of k"
+    /// choice `constraint`.
+    pub fn declare_choice(&mut self, constraint: ChoiceConstraint<A>) {
+        if self.domain.contains(&constraint) {
+            return;
+        }
+
+        let vars: Vec<Lit> = self
+            .sat_state
+            .atoms_vars(constraint.options.iter().cloned());
+
+        let solver = self.sat_state.exhaustive_checker();
+        gadgets::add_at_least_one_constraint(solver, &vars);
+        gadgets::add_at_most_one_constraint(solver, &vars);
+
+        self.domain.insert(constraint);
     }
 
     /// Adds a nogood for `region`.
@@ -116,12 +137,72 @@ fn test_duplicate_nogood() {
 
     state.add_nogood(FathomedRegion::new(vec!["x".into()]));
     state.add_nogood(FathomedRegion::new(vec!["y".into()]));
-
     state.add_nogood(FathomedRegion::new(vec!["x".into()]));
     state.add_nogood(FathomedRegion::new(vec!["y".into()]));
 
     let witness = state
         .gap_witness(AssignmentReductionPolicy::Noop)
         .expect("has witness");
-    assert_eq!(witness, vec![("x".into(), false), ("y".into(), false)]);
+    assert_eq!(witness, vec![("x".into(), false), ("y".into(), false)])
+}
+
+#[test]
+fn test_nogood_with_domain() {
+    // Add nogoods for `x = true` and `y = true`, and then a domain
+    // constraint `exactly_one_of(x, y)`.
+    // We should be done.
+
+    let mut state = Impl::<String>::new();
+
+    state.add_nogood(FathomedRegion::new(vec!["x".into()]));
+    state.add_nogood(FathomedRegion::new(vec!["y".into()]));
+
+    state.declare_choice(ChoiceConstraint::new(vec!["x".into(), "y".into()]));
+    assert_eq!(state.gap_witness(AssignmentReductionPolicy::Noop), None);
+}
+
+#[test]
+fn test_nogood_with_duplicate_domain() {
+    // Add nogoods for `x = true` and `y = true`, and then a domain
+    // constraint `exactly_one_of(x, y)`... twice
+    // We should be done.
+
+    let mut state = Impl::<String>::new();
+
+    state.add_nogood(FathomedRegion::new(vec!["x".into()]));
+    state.add_nogood(FathomedRegion::new(vec!["y".into()]));
+
+    state.declare_choice(ChoiceConstraint::new(vec!["x".into(), "y".into()]));
+    state.declare_choice(ChoiceConstraint::new(vec!["x".into(), "y".into()]));
+    assert_eq!(state.gap_witness(AssignmentReductionPolicy::Noop), None);
+}
+
+#[test]
+fn test_nogood_with_multiple_domains() {
+    // Add domain constraints `exactly_one_of(x, y)`,
+    // `exactly_one_of(x, z)`, and nogood `x = true.
+    //
+    // There should be exactly one gap left, for `x = false, y = true,
+    // z = true`.
+
+    let mut state = Impl::<String>::new();
+
+    state.declare_choice(ChoiceConstraint::new(vec!["x".into(), "y".into()]));
+
+    state.declare_choice(ChoiceConstraint::new(vec!["x".into(), "z".into()]));
+
+    state.add_nogood(FathomedRegion::new(vec!["x".into()]));
+
+    let witness = state
+        .gap_witness(AssignmentReductionPolicy::Noop)
+        .expect("has witness");
+    assert_eq!(
+        witness,
+        vec![("x".into(), false), ("y".into(), true), ("z".into(), true)]
+    );
+
+    // Now let's claim we also don't like `y = z = true`.
+    state.add_nogood(FathomedRegion::new(vec!["y".into(), "z".into()]));
+    // We should be done.
+    assert_eq!(state.gap_witness(AssignmentReductionPolicy::Noop), None);
 }
