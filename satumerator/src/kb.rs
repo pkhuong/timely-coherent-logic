@@ -33,3 +33,22 @@ impl<A: StateAtom> FathomedRegion<A> {
         }
     }
 }
+
+/// A `ChoiceConstraint` is a set of `StateAtoms` from which any valid
+/// state much pick exactly one option to assert as true.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct ChoiceConstraint<A: StateAtom> {
+    pub options: BTreeSet<A>,
+}
+
+impl<A: StateAtom> ChoiceConstraint<A> {
+    /// Returns a `ChoiceConstraint` for all the atoms in the iteratable `atoms`.
+    pub fn new<Iter>(atoms: Iter) -> Self
+    where
+        Iter: IntoIterator<Item = A>,
+    {
+        Self {
+            options: atoms.into_iter().collect::<BTreeSet<_>>(),
+        }
+    }
+}
