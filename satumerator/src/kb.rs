@@ -12,9 +12,8 @@ where
 {
 }
 
-/// A `FathomedRegion` represents the knowledge that, for a given
-/// context (or in all contexts if `None`), we have fully explored all
-/// states that match `partial_assignment`.
+/// A `FathomedRegion` represents the knowledge that we have fully
+/// explored all states that match `partial_assignment`.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct FathomedRegion<A: StateAtom> {
     pub partial_assignment: BTreeSet<A>,
