@@ -1,4 +1,5 @@
 mod backend;
+mod gadgets;
 mod kb;
 mod solver_state;
 
