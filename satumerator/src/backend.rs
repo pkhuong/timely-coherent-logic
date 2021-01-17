@@ -1,8 +1,11 @@
 //!
+use super::gadgets;
 use super::solver_state::SolverState;
+use super::FathomedRegion;
 use super::StateAtom;
 use cryptominisat::Lbool;
 use cryptominisat::Lit;
+use std::collections::HashSet;
 
 /// The `AssignmentReductionPolicy` determines how we want to handle a
 /// "gap" witness.  For now, the only thing we can do is to return
@@ -15,12 +18,15 @@ pub enum AssignmentReductionPolicy {
 
 pub struct Impl<A: StateAtom> {
     sat_state: SolverState<A>,
+    // nogood clauses.
+    clauses: HashSet<FathomedRegion<A>>,
 }
 
 impl<A: StateAtom> Impl<A> {
     pub fn new() -> Self {
         Self {
             sat_state: SolverState::new(),
+            clauses: HashSet::new(),
         }
     }
 
@@ -60,6 +66,21 @@ impl<A: StateAtom> Impl<A> {
             Lbool::Undef => panic!("Exhaustive check timed out without time limit."),
         }
     }
+
+    /// Adds a nogood for `region`.
+    pub fn add_nogood(&mut self, region: FathomedRegion<A>) {
+        if self.clauses.contains(&region) {
+            return;
+        }
+
+        let vars: Vec<Lit> = self
+            .sat_state
+            .atoms_vars(region.partial_assignment.iter().cloned());
+
+        gadgets::add_nogood(self.sat_state.exhaustive_checker(), &vars);
+
+        self.clauses.insert(region);
+    }
 }
 
 #[test]
@@ -70,4 +91,37 @@ fn test_smoke() {
         state.gap_witness(AssignmentReductionPolicy::Noop),
         Some(vec![])
     );
+}
+
+#[test]
+fn test_nogood() {
+    // Add nogoods for `x = true` and `y = true`.
+    // We should still find one last gap, for `x = y = false`.
+    let mut state = Impl::<String>::new();
+
+    state.add_nogood(FathomedRegion::new(vec!["x".into()]));
+    state.add_nogood(FathomedRegion::new(vec!["y".into()]));
+
+    let witness = state
+        .gap_witness(AssignmentReductionPolicy::Noop)
+        .expect("has witness");
+    assert_eq!(witness, vec![("x".into(), false), ("y".into(), false)]);
+}
+
+#[test]
+fn test_duplicate_nogood() {
+    // Add nogoods for `x = true` and `y = true` multiple times.
+    // We should still find one last gap, for `x = y = false`.
+    let mut state = Impl::<String>::new();
+
+    state.add_nogood(FathomedRegion::new(vec!["x".into()]));
+    state.add_nogood(FathomedRegion::new(vec!["y".into()]));
+
+    state.add_nogood(FathomedRegion::new(vec!["x".into()]));
+    state.add_nogood(FathomedRegion::new(vec!["y".into()]));
+
+    let witness = state
+        .gap_witness(AssignmentReductionPolicy::Noop)
+        .expect("has witness");
+    assert_eq!(witness, vec![("x".into(), false), ("y".into(), false)]);
 }
