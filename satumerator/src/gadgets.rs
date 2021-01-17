@@ -28,6 +28,36 @@ pub fn add_at_most_one_constraint(solver: &mut Solver, vars: &[Lit]) {
     }
 }
 
+/// Constrains `output = (var_0 & var_1 & ...)`.
+/// Output is true iff the model is rejected by the nogood.
+pub fn add_tseitin_nogood(solver: &mut Solver, output: Lit, nogood: &[Lit]) {
+    // For each var in nogood, `output -> var`, i.e., `!output | var`.
+    for var in nogood {
+        solver.add_clause(&[*var, !output]);
+    }
+
+    // Similarly, `nogood -> output`, i.e., `!nogood | output`,
+    // and we can apply De Morgan's law on `!nogood`
+    let mut one_of = Vec::with_capacity(nogood.len() + 1);
+    one_of.push(output);
+    for var in nogood {
+        one_of.push(!*var);
+    }
+
+    solver.add_clause(&one_of);
+}
+
+/// Constraints `output = x | y`.
+pub fn add_tseitin_or(solver: &mut Solver, output: Lit, x: Lit, y: Lit) {
+    // x -> output, y -> output;
+    // x -> output == !x | output.
+    solver.add_clause(&[!x, output]);
+    solver.add_clause(&[!y, output]);
+    //    output -> x | y
+    // == !output | x | y
+    solver.add_clause(&[!output, x, y]);
+}
+
 #[test]
 fn test_nogood() {
     use cryptominisat::Lbool;
@@ -162,6 +192,133 @@ fn test_add_exactly_one() {
         ];
         // Should be true if `popcount(values) == 1`
         let expected = if values != 0 && (values & (values - 1)) == 0 {
+            Lbool::True
+        } else {
+            Lbool::False
+        };
+
+        println!(
+            "values={} assumptions={:?} expected={:?}",
+            values, assumptions, expected
+        );
+        assert_eq!(solver.solve_with_assumptions(&assumptions), expected);
+    }
+}
+
+#[test]
+fn test_tseitin_no_good() {
+    use cryptominisat::Lbool;
+
+    let mut solver = Solver::new();
+    let (r, x, y, z) = (
+        solver.new_var(),
+        solver.new_var(),
+        solver.new_var(),
+        solver.new_var(),
+    );
+
+    // Add r == (x & y & z)
+    add_tseitin_nogood(&mut solver, r, &[x, y, z]);
+    // The constraint set is feasible.
+    assert_eq!(solver.solve(), Lbool::True);
+    // Iterate over the truth value for all 4 variables
+    for values in 0..16 {
+        let r_value = (values & 1) != 0;
+        let x_value = (values & 2) != 0;
+        let y_value = (values & 4) != 0;
+        let z_value = (values & 8) != 0;
+        let assumptions = [
+            Lit::new(r.var(), !r_value).expect("ok"),
+            Lit::new(x.var(), !x_value).expect("ok"),
+            Lit::new(y.var(), !y_value).expect("ok"),
+            Lit::new(z.var(), !z_value).expect("ok"),
+        ];
+        let expected = if r_value == (x_value & y_value & z_value) {
+            Lbool::True
+        } else {
+            Lbool::False
+        };
+
+        println!(
+            "values={} assumptions={:?} expected={:?}",
+            values, assumptions, expected
+        );
+        assert_eq!(solver.solve_with_assumptions(&assumptions), expected);
+    }
+}
+
+#[test]
+fn test_tseitin_or() {
+    use cryptominisat::Lbool;
+
+    let mut solver = Solver::new();
+    let (r, x, y) = (solver.new_var(), solver.new_var(), solver.new_var());
+
+    // Let r = x | y
+    add_tseitin_or(&mut solver, r, x, y);
+
+    // The constraint set is feasible.
+    assert_eq!(solver.solve(), Lbool::True);
+    // Iterate over the truth value for all 3 variables
+    for values in 0..8 {
+        let r_value = (values & 1) != 0;
+        let x_value = (values & 2) != 0;
+        let y_value = (values & 4) != 0;
+        let assumptions = [
+            Lit::new(r.var(), !r_value).expect("ok"),
+            Lit::new(x.var(), !x_value).expect("ok"),
+            Lit::new(y.var(), !y_value).expect("ok"),
+        ];
+        // Should be true if `values != 7`
+        let expected = if r_value == (x_value | y_value) {
+            Lbool::True
+        } else {
+            Lbool::False
+        };
+
+        println!(
+            "values={} assumptions={:?} expected={:?}",
+            values, assumptions, expected
+        );
+        assert_eq!(solver.solve_with_assumptions(&assumptions), expected);
+    }
+}
+
+#[test]
+fn test_tseitin_two_nogoods() {
+    use cryptominisat::Lbool;
+
+    let mut solver = Solver::new();
+    // Let's check that we can represent the union of two nogoods.  In
+    // order to do that with Tseitin's encoding we need 3
+    // result/output variables.
+    let (all, r1, r2) = (solver.new_var(), solver.new_var(), solver.new_var());
+
+    let (x, y, z) = (solver.new_var(), solver.new_var(), solver.new_var());
+
+    // Set r1 == (x & y).
+    add_tseitin_nogood(&mut solver, r1, &[x, y]);
+    // Set r2 == (y & z).
+    add_tseitin_nogood(&mut solver, r2, &[y, z]);
+    // Set all = r1 | r2
+    add_tseitin_or(&mut solver, all, r1, r2);
+
+    // Iterate over the truth value for all 3 variables and the final
+    // `all` output.
+    for values in 0..16 {
+        let all_value = (values & 1) != 0;
+        let x_value = (values & 2) != 0;
+        let y_value = (values & 4) != 0;
+        let z_value = (values & 8) != 0;
+        let assumptions = [
+            Lit::new(all.var(), !all_value).expect("ok"),
+            Lit::new(x.var(), !x_value).expect("ok"),
+            Lit::new(y.var(), !y_value).expect("ok"),
+            Lit::new(z.var(), !z_value).expect("ok"),
+        ];
+        let nogood_1 = x_value & y_value;
+        let nogood_2 = y_value & z_value;
+        let expected = if all_value == (nogood_1 | nogood_2) {
             Lbool::True
         } else {
             Lbool::False
