@@ -1,0 +1,639 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="" xml:lang="">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Timely Coherent Logic</title>
+  <style type="text/css">
+      code{white-space: pre-wrap;}
+      span.smallcaps{font-variant: small-caps;}
+      span.underline{text-decoration: underline;}
+      div.column{display: inline-block; vertical-align: top; width: 50%;}
+  </style>
+  <style>
+  // modest.css (https://github.com/markdowncss/modest/blob/master/index.css)
+  // Copyright (c) 2014-2015 John Otander, MIT licensed.
+  //
+  // Additional modifications to improve integration with our doc generator.
+  
+  @import "furtive-print";
+  @import "furtive-code";
+  @import "furtive-links";
+  @import "furtive-typescale";
+  @import "furtive-responsive-utils";
+  
+  @import url(http://fonts.googleapis.com/css?family=Open+Sans+Condensed:300,300italic,700);
+  @import url(http://fonts.googleapis.com/css?family=Arimo:700,700italic);
+  
+  html {
+    font-size: 18px;
+    max-width: 100%;
+  }
+  
+  nav {
+    height: 100%;
+    width: auto;
+    position: fixed;
+    z-index: 1;
+    top: 0;
+    right: 20px;
+    overflow-x: hidden;
+    padding-top: 20px;
+  }
+  
+  .sidenav {
+    height: 100%;
+    width: auto;
+    position: fixed;
+    z-index: 1;
+    top: 0;
+    left: 20px;
+    overflow-x: hidden;
+    padding-top: 20px;
+  }
+  
+  .sidenav-common {
+    color: #888
+  }
+  
+  
+  body {
+    color: #444;
+    font-family: 'Open Sans Condensed', sans-serif;
+    font-weight: 300;
+    margin: 0 auto;
+    max-width: 48rem;
+    line-height: 1.45;
+    padding: .25rem;
+  }
+  
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    font-family: Arimo, Helvetica, sans-serif;
+  }
+  
+  h1,
+  h2,
+  h3 {
+    border-bottom: 2px solid #fafafa;
+    margin-bottom: 1.15rem;
+    padding-bottom: .5rem;
+    text-align: center;
+  }
+  
+  blockquote {
+    border-left: 8px solid #fafafa;
+    padding: 1rem;
+  }
+  
+  pre,
+  code {
+    background-color: #fafafa;
+  }
+  </style>
+</head>
+<body>
+<header>
+<h1 class="title">Timely Coherent Logic</h1>
+<p class="subtitle">46999e13d5ed23e5 @ https://github.com/pkhuong/timely-coherent-logic/tree/wip-6</p>
+<p class="date">Mon 18 Jan 2021 09:02:26 PM EST</p>
+</header>
+<nav id="TOC">
+<ul>
+<li><a href="#tcl-a-modular-prover-for-coherent-logic">TCL: a modular prover for Coherent Logic</a></li>
+<li><a href="#the-propagation-engine">The propagation engine</a></li>
+<li><a href="#ground-values">Ground values</a></li>
+<li><a href="#unification">Unification</a></li>
+<li><a href="#matching-pattern-matching-in-bulk-diff">matching: pattern matching in bulk <a href='https://github.com/pkhuong/timely-coherent-logic/commit/cd738d1dde52abe91da11bbd77fb06a4861100e3?diff=unified#toc'>(diff)</a></a></li>
+<li><a href="#the-execution-module">The <code>execution</code> module</a></li>
+<li><a href="#a-trivial-and-naïve-datalog-engine">A trivial and naïve Datalog engine</a></li>
+<li><a href="#matching-full-blown-sequents">Matching full-blown sequents</a></li>
+<li><a href="#add-support-for-constants-in-patterns">Add support for constants in patterns</a></li>
+<li><a href="#satumerator-howto-prove-you-tried-everything-diff">satumerator: HOWTO prove you tried everything <a href='https://github.com/pkhuong/timely-coherent-logic/commit/71497baf864730d8ffe1383eeacddab20382f2ce?diff=unified#toc'>(diff)</a></a></li>
+<li><a href="#initial-piping">Initial piping</a></li>
+<li><a href="#start-tracking-simple-nogoods">start tracking simple nogoods</a></li>
+<li><a href="#add-domain-constraints">add domain constraints</a></li>
+<li><a href="#construct-a-complemented-checker-sat-state">construct a “complemented” checker SAT state</a></li>
+<li><a href="#check-and-reduce-assignments-with-tseitin">Check and reduce assignments with Tseitin</a></li>
+<li><a href="#positivesatumerator-satumerate-only-with-truths-diff"><code>PositiveSatumerator</code>: Satumerate only with truths <a href='https://github.com/pkhuong/timely-coherent-logic/commit/46999e13d5ed23e54682193a81165c44889d7dc2?diff=unified#toc'>(diff)</a></a></li>
+</ul>
+</nav>
+<h1 id="tcl-a-modular-prover-for-coherent-logic">TCL: a modular prover for Coherent Logic</h1>
+<p><a href="https://link.springer.com/chapter/10.1007/11591191_18">First-order coherent logic</a> (a.k.a. geometric logic) is a relatively tractable subset of first-order logic that can directly work with existentials in consequents (e.g., <span class="math inline"><em>p</em>(<em>x</em>) ⇒ ∃<em>y</em>.<em>q</em>(<em>x</em>, <em>y</em>)</span>). This property makes it interesting for human-in-the-loop proof worloads, since a prover’s internal state maps cleanly to the way people think about proofs.</p>
+<p>At first sight, coherent logic seems a bit limited, but Bezem and Coquand present a mechanical translation from first-order logic to coherent logic. Obviously, this translation can’t yield a complete proof algorithm for full first-order logic: while an implementation of coherent logic can find some inconsistencies, we can only hope for semialgorithms in general. The logic itself also only uses constructive axioms, so there might something interesting with a specialised cost-aware prover and Curry-Howard; <a href="https://hal.inria.fr/hal-00983975v2/document">this paper</a> has more to say about using coherent logic as a bridge between fully automated and human-driven theorem proving.</p>
+<p>A few fully automated provers already exist for coherent logic, for example, <a href="https://github.com/janicicpredrag/Larus">Larus</a> and <a href="https://code.google.com/archive/p/clp/">clp</a>, or <a href="https://rd.springer.com/chapter/10.1007/978-3-642-25070-5_12">ArgoCLP</a>.</p>
+<p>The Timely Coherent Logic (TCL) project aims to:</p>
+<ol type="1">
+<li>Keep things modular, with narrow interfaces, in order to make it easier to explore different interaction patterns (e.g., hybrids of automated and interactive search).</li>
+<li>Build on top of <a href="https://docs.rs/differential-dataflow">differential dataflow</a> and generic database techniques to achieve efficient propagation and low-latency updates.</li>
+<li>Find fun ways to leverage state-of-the-art SAT solvers.</li>
+</ol>
+<h4 id="project-setup-trivialities-diff">project setup trivialities <a href='https://github.com/pkhuong/timely-coherent-logic/commit/71bb0a850d05f23b3590ecc6cea2aa5c5655784f?diff=unified#toc'>(diff)</a></h4>
+<p>This repository is an experiment in something loosely inspired by literate programming: the project’s commit history is constantly rewritten to hopefully form an accessible introduction to the code base. The commit messages are transformed into a coherent(?) document with <code>s/render.sh</code>.</p>
+<p>We’ll just have to see if that approach is fruitful and sustainable.</p>
+<details>
+<summary>Commit summary <a href='https://github.com/pkhuong/timely-coherent-logic/commit/71bb0a850d05f23b3590ecc6cea2aa5c5655784f?diff=unified#toc'>(GH)</a></summary>
+<pre> .gitignore (new)                            |   7 <span style='color: green'>+</span>
+ Cargo.lock (new)                            | 250 <span style='color: green'>++++++++++++++++++++++++++++</span>
+ Cargo.toml (new)                            |   3 <span style='color: green'>+</span>
+ LICENSE (new)                               |  21 <span style='color: green'>+++</span>
+ README.md (new)                             |   6 <span style='color: green'>+</span>
+ s/modest.css (new)                          |  85 <span style='color: green'>++++++++++</span>
+ s/render.py (new)                           | 136 <span style='color: green'>+++++++++++++++</span>
+ s/render.sh (new +x)                        |  19 <span style='color: green'>+++</span>
+ timely-coherent-propagator/.gitignore (new) |   1 <span style='color: green'>+</span>
+ timely-coherent-propagator/Cargo.toml (new) |  12 <span style='color: green'>++</span>
+ timely-coherent-propagator/README.md (new)  |  11 <span style='color: green'>++</span>
+ timely-coherent-propagator/src/lib.rs (new) |   0
+ timely-coherent-propagator/x.toml (new)     |  11 <span style='color: green'>++</span>
+ 13 files changed, 562 insertions(+)
+</pre>
+</details>
+<h1 id="the-propagation-engine">The propagation engine</h1>
+<p>The core of a coherent logic solver is the propagation engine, which implements the few (higher-order) deduction rules that define coherent logic.</p>
+<p>Coherent logic is a subset of first-order logic, so it only manipulates variables, opaque objects variables with identity but not otherwise imbued with any meaning, and predicates on tuples of variables. These predicates represent things we know or can assume to be true, and absence <em>is not</em> negation (i.e., we have to assume an <a href="https://en.wikipedia.org/wiki/Open-world_assumption">open world</a>).</p>
+<p>The <a href="https://en.wikipedia.org/wiki/Datalog">datalog</a> programming language successfully implements the correspondence between logical predicate and “tables” in databases. We’ll do the same in TCL, and, in fact, most of the code in the propagation engine actually implements datalog!</p>
+<p>We implement TCL’s propagation engine (<code>timely-coherent-propagator</code>) on top of <a href="https://docs.rs/differential-dataflow">differential dataflow</a> because we expect to frequently make changes to the input state (assumptions); in particular, I’m betting that free-er form traversals than backtracking will make it easier to implement hybrid semi-automated search strategies.</p>
+<h1 id="ground-values">Ground values</h1>
+<p>The representation of data tuples in tables is key to a database’s performance. The same should be true of the propagator: the majority of the CPU time should involve manipulating facts, i.e., predicate tuples, or temporary “captures” when matching sequents’ antecedents.</p>
+<p>Working with <a href="https://timelydataflow.github.io/differential-dataflow/">differential dataflow (DD)</a> also steers us toward collection-driven programming, where we’ll, e.g., apply the same function to every member of a homegeneous collection. Concretely, this means that we should hoist “shape” or type information outside DD collections. For example, rather than having a single collection of knowns facts, with each fact tagged by a predicate, we’ll have one collection for each predicate.</p>
+<p>This design decision gets us much closer to regular database tech, where each predicate becomes a table.</p>
+<p>Since shape information (e.g., what predicate a given tuple is for), isn’t repeated in the contents of collections, the core of our storage problem is really just variables, and tuples (arrays / slices) of variables. We want to make sure these are relatively compact, while also being as easy as possible to pass around, copy, and free.</p>
+<h4 id="groundvariable-lightweight-value-type-with-opaque-identity-diff">ground/variable: lightweight value type with opaque identity <a href='https://github.com/pkhuong/timely-coherent-logic/commit/855409d701cbcbd9026dbc5822ae8a7183c3e16e?diff=unified#toc'>(diff)</a></h4>
+<p>Variables in first-order logic predicates have no specific value, only an identity, so there’s a lot of design freedom.</p>
+<p>We don’t expect to observe too many variables (we’re mostly interested in human-readable proofs), so we will simply represent variables as 32-bit integers, and generate fresh variables with a gensym counter.</p>
+<p>That’s about as simple and compact as it gets, for a first cut.</p>
+<p>We’ll also derive a <code>Ord</code> on these variables because it’s convenient to be able to use ordered containers like BTreeSet or, later, sorted vectors.</p>
+<details>
+<summary>Commit summary <a href='https://github.com/pkhuong/timely-coherent-logic/commit/855409d701cbcbd9026dbc5822ae8a7183c3e16e?diff=unified#toc'>(GH)</a></summary>
+<pre> timely-coherent-propagator/src/ground/mod.rs (new) | 12 <span style='color: green'>++++</span>
+ .../src/ground/variable.rs (new)                   | 69 <span style='color: green'>++++++++++++++++++++++</span>
+ timely-coherent-propagator/src/lib.rs              |  1 <span style='color: green'>+</span>
+ 3 files changed, 82 insertions(+)
+</pre>
+</details>
+<h4 id="groundrecord-store-individual-factscaptures-as-variable-diff">ground/record: store individual facts/captures as &amp;[Variable] <a href='https://github.com/pkhuong/timely-coherent-logic/commit/8f84354d06940c6c5077d2c6a0249cd44b8506e6?diff=unified#toc'>(diff)</a></h4>
+<p>We expect to store facts and derived information in homogeneous containers, where each element represents one instance of a specific form of information (e.g., “this predicate is known to be true for al the tuples in the collection”). If variables are the value we’ll most commonly manipulate, records of variables come immediately after.</p>
+<p>For now, we use boxed slices instead of vectors in order to shave a <code>usize</code> of heap footprint. Eventually, we’ll probably want to store a fingerprint inline, to speed up hashing and comparison, or maybe implement some small object optimisation (we expect a lot of small records, rather than a few large ones). That can all wait.</p>
+<details>
+<summary>Commit summary <a href='https://github.com/pkhuong/timely-coherent-logic/commit/8f84354d06940c6c5077d2c6a0249cd44b8506e6?diff=unified#toc'>(GH)</a></summary>
+<pre> timely-coherent-propagator/src/ground/mod.rs       |   3 <span style='color: green'>+</span>
+ .../src/ground/record.rs (new)                     | 127 <span style='color: green'>+++++++++++++++++++++</span>
+ 2 files changed, 130 insertions(+)
+</pre>
+</details>
+<h4 id="groundrecord-stub-implement-abomonation-diff">ground/record: (stub) implement abomonation <a href='https://github.com/pkhuong/timely-coherent-logic/commit/e93dce9b34e45b282996a6f4f61eaa33cd127291?diff=unified#toc'>(diff)</a></h4>
+<p>Differential Dataflow needs the <a href="https://github.com/TimelyDataflow/abomonation/">Abomonation trait</a> for its distributed computation code, but we don’t (yet) plan to exercise that feature.</p>
+<p>The default implementation doesn’t work for us (boxed slices are pointers), so make sure to panic if the trait is ever actually used.</p>
+<details>
+<summary>Commit summary <a href='https://github.com/pkhuong/timely-coherent-logic/commit/e93dce9b34e45b282996a6f4f61eaa33cd127291?diff=unified#toc'>(GH)</a></summary>
+<pre> timely-coherent-propagator/Cargo.toml           |  1 <span style='color: green'>+</span>
+ timely-coherent-propagator/src/ground/record.rs | 22 <span style='color: green'>++++++++++++++++++++++</span>
+ 2 files changed, 23 insertions(+)
+</pre>
+</details>
+<h4 id="groundrecord-add-associated-function-to-convert-tags-diff">ground/record: add associated function to convert tags <a href='https://github.com/pkhuong/timely-coherent-logic/commit/252f51cb9c76dc6646b6066e72b43192c2434e5e?diff=unified#toc'>(diff)</a></h4>
+<p>While casting tags, e.g., from <code>Capture</code> to <code>Fact</code>, should be a rare operations, it’s convenient to have that bitcast available. It’s certainly preferable to flip from one tag to the other in-place, but still explicitly, compared to forcing a deep copy.</p>
+<details>
+<summary>Commit summary <a href='https://github.com/pkhuong/timely-coherent-logic/commit/252f51cb9c76dc6646b6066e72b43192c2434e5e?diff=unified#toc'>(GH)</a></summary>
+<pre> timely-coherent-propagator/src/ground/record.rs | 20 <span style='color: green'>++++++++++++++++++++</span>
+ 1 file changed, 20 insertions(+)
+</pre>
+</details>
+<h1 id="unification">Unification</h1>
+<p>Now that we know how to represent <code>Variable</code>s and <code>Fact</code>s (tuples of variables), the next step is matching <code>Fact</code>s against patterns to generate <code>Capture</code>s, and, in the opposite, instantiate patterns with <code>Capture</code>s to generate <code>Fact</code>s.</p>
+<p>In order to do all that, we need a data structure describe patterns. We’re only concerned with tuples of <code>Variable</code>s, so that’s an easy task: there’s no nesting, or variation in length.</p>
+<p>We identified that what we’re really interested in is matching <code>Fact</code>s to generate <code>Capture</code>s, and converting <code>Capture</code>s to <code>Fact</code>s. At the heart of all that is manipulating environments, mappings from pattern <code>MetaVar</code>iable to <code>Variable</code>s.</p>
+<p>We will store these environments in DD collections, so we don’t want nor need to represent them as associative data structures like hash tables or alists: we can maintain a <code>MetaVar</code>-to-index mapping next to each collection, and store each environment as a <code>Capture</code> record.</p>
+<p>This means that we will also have to explicitly shuffle <code>Capture</code>s around to change their shape (e.g., to make sure two collections of captures are compatible before merging them).</p>
+<p>That’s why we’ll start with defining pattern <code>MetaVar</code>iables and generating shuffle functions at runtime.</p>
+<h4 id="unificationmetavariable-matching-variables-diff">unification/metavariable: matching variables <a href='https://github.com/pkhuong/timely-coherent-logic/commit/809d7a4cd26dd9169d138867be7fbaa9fc0047e1?diff=unified#toc'>(diff)</a></h4>
+<p>In order to know what a collection of captures means, and to, e.g., make two such collections compatibles, we need a way to refer to <span class="math inline">∀</span>-variables in antecedents. Our ground values are (tuples of) <code>Variable</code>s, so we’ll call those <code>MetaVar</code>iables.</p>
+<p>The only thing we’ll use in these <code>MetaVar</code>s is their identity, but it’s also useful to have a printed representation for debugging. That’s why we’ll generate unique identifiers by incrementing a <code>u64</code>, but still adorn them with a <code>name</code> that’s only used for debug formatting. The overhead of that string should be negligible, since we don’t store <code>MetaVar</code>s directly in collections, but only alongside them.</p>
+<p>We also don’t want to use the <code>name</code> for identity, because that would open us up to all sorts of nasty scoping bugs. Give our first-order sequents, it really makes sense to handle all scope issues in the parser.</p>
+<p><code>MetaVar</code>s are also important for join ordering: they represent attributes for equijoin (or antijoin) keys. We’ll make it easy to do something not too horrible with sequentially allocated ids: <code>MetaVar</code>s that are defined earlier in clauses will compare lesser, and should probably be joined later.</p>
+<details>
+<summary>Commit summary <a href='https://github.com/pkhuong/timely-coherent-logic/commit/809d7a4cd26dd9169d138867be7fbaa9fc0047e1?diff=unified#toc'>(GH)</a></summary>
+<pre> timely-coherent-propagator/src/lib.rs              |   1 <span style='color: green'>+</span>
+ .../src/unification/metavariable.rs (new)          | 100 <span style='color: green'>+++++++++++++++++++++</span>
+ .../src/unification/mod.rs (new)                   |  20 <span style='color: green'>+++++</span>
+ 3 files changed, 121 insertions(+)
+</pre>
+</details>
+<h4 id="unificationproject-project-and-reorder-captures-diff">unification/project: project and reorder <code>Capture</code>s <a href='https://github.com/pkhuong/timely-coherent-logic/commit/7e74dd2de8fd178fc10e01edb09bf0d4f6a5d089?diff=unified#toc'>(diff)</a></h4>
+<p>This will be useful to compute join keys, and to drop matches that are unused after a join.</p>
+<details>
+<summary>Commit summary <a href='https://github.com/pkhuong/timely-coherent-logic/commit/7e74dd2de8fd178fc10e01edb09bf0d4f6a5d089?diff=unified#toc'>(GH)</a></summary>
+<pre> timely-coherent-propagator/src/unification/mod.rs  |   2 <span style='color: green'>+</span>
+ .../src/unification/project.rs (new)               | 119 <span style='color: green'>+++++++++++++++++++++</span>
+ 2 files changed, 121 insertions(+)
+</pre>
+</details>
+<h4 id="unificationproject-project-from-multiple-captures-at-once-diff">unification/project: project from multiple <code>Capture</code>s at once <a href='https://github.com/pkhuong/timely-coherent-logic/commit/669e2f5945b8ec82143915478450ea46ed73d05f?diff=unified#toc'>(diff)</a></h4>
+<p>After equijoining <code>Capture</code>s, we’ll want to combine matching <code>Capture</code>s and extract the variables we still care about. For example, we might want to take <code>((x, y), (y, z))</code>, and turn that into <code>(x, z)</code> or <code>(x, y, z)</code>. That’s what <code>MultiProjection</code>s implement.</p>
+<details>
+<summary>Commit summary <a href='https://github.com/pkhuong/timely-coherent-logic/commit/669e2f5945b8ec82143915478450ea46ed73d05f?diff=unified#toc'>(GH)</a></summary>
+<pre> timely-coherent-propagator/src/unification/mod.rs  |   1 <span style='color: green'>+</span>
+ .../src/unification/project.rs                     | 149 <span style='color: green'>+++++++++++++++++++++</span>
+ 2 files changed, 150 insertions(+)
+</pre>
+</details>
+<h4 id="unificationpattern-match-facts-against-expectations-diff">unification/pattern: match Facts against expectations <a href='https://github.com/pkhuong/timely-coherent-logic/commit/bebb6fb38887398243e34c0f3a2a47563be9e1a0?diff=unified#toc'>(diff)</a></h4>
+<p>… and construct a Capture on success.</p>
+<p>For now, a pattern’s element must be a metavariable. This is already non-trivial, as references to the same metavariable must match the same ground fact.</p>
+<p>This pattern matching phase is the first step to trigger Coherent Logic deduction rules.</p>
+<details>
+<summary>Commit summary <a href='https://github.com/pkhuong/timely-coherent-logic/commit/bebb6fb38887398243e34c0f3a2a47563be9e1a0?diff=unified#toc'>(GH)</a></summary>
+<pre> timely-coherent-propagator/src/unification/mod.rs  |   3 <span style='color: green'>+</span>
+ .../src/unification/pattern.rs (new)               | 161 <span style='color: green'>+++++++++++++++++++++</span>
+ 2 files changed, 164 insertions(+)
+</pre>
+</details>
+<h4 id="unificationpattern-new-function-instantiate_template-diff">unification/pattern: new function instantiate_template <a href='https://github.com/pkhuong/timely-coherent-logic/commit/2b6c187f8e079f5067c43b001ac28bac9784a312?diff=unified#toc'>(diff)</a></h4>
+<p>Most instantiations shouldn’t be on the fast path, so we can use a straightforward interface: accept a template (slice of <code>pattern::Element</code>) and an environment map from MetaVar to variable, and return a Fact record.</p>
+<p>We expect this function to be called with partial environments, with missing captures backfilled after the fact, to represent existentials.</p>
+<details>
+<summary>Commit summary <a href='https://github.com/pkhuong/timely-coherent-logic/commit/2b6c187f8e079f5067c43b001ac28bac9784a312?diff=unified#toc'>(GH)</a></summary>
+<pre> timely-coherent-propagator/src/unification/mod.rs  |  1 <span style='color: green'>+</span>
+ .../src/unification/pattern.rs                     | 68 <span style='color: green'>++++++++++++++++++++++</span>
+ 2 files changed, 69 insertions(+)
+</pre>
+</details>
+<h4 id="unificationpattern-templatepattern-capture---fact-diff">unification/pattern: Template(Pattern), Capture -&gt; Fact <a href='https://github.com/pkhuong/timely-coherent-logic/commit/2487e1859d9773017b252df739902234b36a7b76?diff=unified#toc'>(diff)</a></h4>
+<p>Simple datalog-like rules do not have to introduce any new variable, nor do they exercise nondeterministic choice. We can keep applying them until we reach a fixed point, same as datalog. In order to make that work, we need transformers from capture to facts.</p>
+<p>That’s what <code>semiunification::Template</code>s offer.</p>
+<details>
+<summary>Commit summary <a href='https://github.com/pkhuong/timely-coherent-logic/commit/2487e1859d9773017b252df739902234b36a7b76?diff=unified#toc'>(GH)</a></summary>
+<pre> timely-coherent-propagator/src/unification/mod.rs  |   1 <span style='color: green'>+</span>
+ .../src/unification/pattern.rs                     | 138 <span style='color: green'>+++++++++++++++++++++</span>
+ 2 files changed, 139 insertions(+)
+</pre>
+</details>
+<h1 id="matching-pattern-matching-in-bulk-diff">matching: pattern matching in bulk <a href='https://github.com/pkhuong/timely-coherent-logic/commit/cd738d1dde52abe91da11bbd77fb06a4861100e3?diff=unified#toc'>(diff)</a></h1>
+<p>We know how to check if a <code>Fact</code> tuple matches a pattern, and how to extract a <code>Capture</code> as a witness of that match, if so. The <code>matching</code> modules takes this tuple-at-a-time logic, and uses it to find all matches in <em>collections</em> of <code>Fact</code>s.</p>
+<p>If we only had to deal with left-hand side antecendents of the form <code>p(x, y)</code>, this would be a trivial <code>filter_map</code> task. However, we wish to handle antecedents that span multiple predicates, e.g. <span class="math inline">∀<em>x</em>, <em>y</em>.<em>p</em>(<em>x</em>, <em>y</em>) ∧ <em>q</em>(<em>y</em>, <em>y</em>)</span>, or even antecedents that match against the same predicate multiple times, e.g., <span class="math inline">∀<em>x</em>, <em>y</em>, <em>z</em>.<em>p</em>(<em>x</em>, <em>y</em>) ∧ <em>p</em>(<em>y</em>, <em>z</em>)</span>.</p>
+<p>Finding matches for these more complex antecedents is equivalent to executing a (self-)join. We’ll want to separately plan the join, and lower a join plan to a differential dataflow expression graph: DD plays a lot of type-level tricks to forbid escaping, so we try to do work in advance when we can. The result is easier to test, read, and debug.</p>
+<details>
+<summary>Commit summary <a href='https://github.com/pkhuong/timely-coherent-logic/commit/cd738d1dde52abe91da11bbd77fb06a4861100e3?diff=unified#toc'>(GH)</a></summary>
+<pre> timely-coherent-propagator/src/lib.rs              |  1 <span style='color: green'>+</span>
+ .../src/matching/mod.rs (new)                      | 34 <span style='color: green'>++++++++++++++++++++++</span>
+ 2 files changed, 35 insertions(+)
+</pre>
+</details>
+<h4 id="matchingexpression-concrete-representation-for-pattern-formulae-diff">matching/expression: concrete representation for pattern formulae <a href='https://github.com/pkhuong/timely-coherent-logic/commit/8711d1d2a17774f5a33e47db8cf5d77400c39d75?diff=unified#toc'>(diff)</a></h4>
+<p>A PredicateFormula represents a simple predicate like <br /><span class="math display"><em>p</em>(<em>x</em>, <em>y</em>),</span><br /> <br /><span class="math display">∀<em>x</em>, <em>y</em></span><br />. A Constraint is a conjunction of multiple such formulas.</p>
+<details>
+<summary>Commit summary <a href='https://github.com/pkhuong/timely-coherent-logic/commit/8711d1d2a17774f5a33e47db8cf5d77400c39d75?diff=unified#toc'>(GH)</a></summary>
+<pre> .../src/matching/expression.rs (new)               | 241 <span style='color: green'>+++++++++++++++++++++</span>
+ timely-coherent-propagator/src/matching/mod.rs     |   4 <span style='color: green'>+</span>
+ 2 files changed, 245 insertions(+)
+</pre>
+</details>
+<h4 id="matchingplan-stub-relational-plan-for-a-fol-expression-diff">matching/plan: stub relational plan for a FOL expression <a href='https://github.com/pkhuong/timely-coherent-logic/commit/c43c0161a9f1c79ccb5550ba049e4b9edded3c3a?diff=unified#toc'>(diff)</a></h4>
+<p>Given an expression <span class="math inline"><em>p</em>(<em>x</em>, <em>y</em>) ∧ <em>q</em>(<em>y</em>, <em>y</em>),</span> we must find all fact tuples in <code>p</code> matching <code>(x, y)</code> (i.e., all of them), and those in <code>q</code> matching <code>(y, y)</code> (i.e., with both values equal). We then want to join the tuples together on the metavariables they have in common (<code>y</code>). Finally, we will only need a subset of these captures to instantiate right-hand sides; we should project away useless captures to let bag/set semantics save more work.</p>
+<p>A matching plan describes how we want to execute matching, projections, and joins.</p>
+<p>The first operation is the trivial “Constant” result, for empty matching expressions (which already always satisfied).</p>
+<details>
+<summary>Commit summary <a href='https://github.com/pkhuong/timely-coherent-logic/commit/c43c0161a9f1c79ccb5550ba049e4b9edded3c3a?diff=unified#toc'>(GH)</a></summary>
+<pre> timely-coherent-propagator/src/matching/mod.rs     |  2 <span style='color: green'>+</span>
+ .../src/matching/plan.rs (new)                     | 73 <span style='color: green'>++++++++++++++++++++++</span>
+ 2 files changed, 75 insertions(+)
+</pre>
+</details>
+<h4 id="executionsplit_container-thin-wrapper-around-dd-containers-diff">execution/split_container: thin wrapper around DD containers <a href='https://github.com/pkhuong/timely-coherent-logic/commit/78154b4d22121404f8e7ce5636e1fe0f3489e652?diff=unified#toc'>(diff)</a></h4>
+<p>Our core is fairly abstracted away from the level type safety that can be realistically offered by a Rust library. We instead dynamically look for shape mismatches at the level of containers (<code>Collection</code>s and <code>Variable</code>s).</p>
+<p>We know we’ll only ever collections of facts (axioms or derived), or temporary collections of captures. Each case can be described differently (facts only have an arity, captures are associated with a parallel list of metavariables). Use a different type for each.</p>
+<details>
+<summary>Commit summary <a href='https://github.com/pkhuong/timely-coherent-logic/commit/78154b4d22121404f8e7ce5636e1fe0f3489e652?diff=unified#toc'>(GH)</a></summary>
+<pre> timely-coherent-propagator/Cargo.toml              |  2 <span style='color: green'>+</span>
+ .../src/execution/mod.rs (new)                     | 10 <span style='color: green'>+++</span>
+ .../src/execution/split_container.rs (new)         | 72 <span style='color: green'>++++++++++++++++++++++</span>
+ timely-coherent-propagator/src/lib.rs              |  1 <span style='color: green'>+</span>
+ 4 files changed, 85 insertions(+)
+</pre>
+</details>
+<h1 id="the-execution-module">The <code>execution</code> module</h1>
+<p>Differential dataflow is statically and (heavily generically) typed. That’s not a great fit for us, since we don’t know our query plan at compile-time… and we mostly work with collections of <code>Fact</code>s or <code>Capture</code>s.</p>
+<p>The execution module wraps DD’s functionality in a runtime type system, where the collections and operators are checked for compatibility eagerly, as the dataflow graph is constructed (and not when operating on individual datum).</p>
+<p>This includes shape-annotated wrappers around DD containers and <code>sinks</code> to access a collection’s values, as well as code to lower join plans into differential dataflow graphs.</p>
+<h4 id="executionsink-updatable-counting-bags-for-collection-data-diff">execution/sink: updatable counting bags for collection data <a href='https://github.com/pkhuong/timely-coherent-logic/commit/3c584123933b2692f7f8f54766399ab44274d0be?diff=unified#toc'>(diff)</a></h4>
+<p>Differential dataflow collections aren’t connections as much as virtual pipes to construct dataflow graphs. In order to get data out of them, we must listen for multiplicity updates, and pipe those to a an actual concrete dictionary data structure.</p>
+<details>
+<summary>Commit summary <a href='https://github.com/pkhuong/timely-coherent-logic/commit/3c584123933b2692f7f8f54766399ab44274d0be?diff=unified#toc'>(GH)</a></summary>
+<pre> timely-coherent-propagator/src/execution/mod.rs    |   5 <span style='color: green'>+</span>
+ .../src/execution/sink.rs (new)                    | 236 <span style='color: green'>+++++++++++++++++++++</span>
+ 2 files changed, 241 insertions(+)
+</pre>
+</details>
+<h4 id="executionsink-add-sink_all_collections-helper-diff">execution/sink: add sink_all_collections helper <a href='https://github.com/pkhuong/timely-coherent-logic/commit/a89044c297b5a46d87d99964d5c7bade16649e58?diff=unified#toc'>(diff)</a></h4>
+<p>It’s convenient to easily convert a map of predicate -&gt; split collection to a map of sinks, with the collections hooked up to the sinks.</p>
+<details>
+<summary>Commit summary <a href='https://github.com/pkhuong/timely-coherent-logic/commit/a89044c297b5a46d87d99964d5c7bade16649e58?diff=unified#toc'>(GH)</a></summary>
+<pre> timely-coherent-propagator/src/execution/mod.rs  |  1 <span style='color: green'>+</span>
+ timely-coherent-propagator/src/execution/sink.rs | 88 <span style='color: green'>++++++++++++++++++++++++</span>
+ 2 files changed, 89 insertions(+)
+</pre>
+</details>
+<h4 id="executionlower_plan-convert-a-matching-plan-to-a-dd-expression-diff">execution/lower_plan: convert a matching plan to a DD expression <a href='https://github.com/pkhuong/timely-coherent-logic/commit/fc6ad6880a230e60ee63526f7da1e4b59118b7bf?diff=unified#toc'>(diff)</a></h4>
+<p>The type-level tricks that differential dataflow to catch misuses in regular programs (where the rust code directly maps to dataflow expressions) is kind of a liability when for code that computes the graph at runtime. The <code>lower_plan</code> module centralises the generics pain, while letting the actual planning remain oblivious to all that.</p>
+<p>First step: ConstantOp, the only Plan operator defined so far, and also the hardest wrt type hacks.</p>
+<details>
+<summary>Commit summary <a href='https://github.com/pkhuong/timely-coherent-logic/commit/fc6ad6880a230e60ee63526f7da1e4b59118b7bf?diff=unified#toc'>(GH)</a></summary>
+<pre> .../src/execution/lower_plan.rs (new)              | 94 <span style='color: green'>++++++++++++++++++++++</span>
+ timely-coherent-propagator/src/execution/mod.rs    |  3 <span style='color: green'>+</span>
+ 2 files changed, 97 insertions(+)
+</pre>
+</details>
+<h4 id="matchingplan-executionlower_plan-add-a-filter-operator-diff">matching/plan, execution/lower_plan: add a Filter operator <a href='https://github.com/pkhuong/timely-coherent-logic/commit/6b8b718116dc6a1d01fa2ae32701649beeea71e9?diff=unified#toc'>(diff)</a></h4>
+<p>Filters are parameterised on a pattern; they accept a collection of facts, keep those that match the pattern, and yield captures for the metavariables in the pattern.</p>
+<p>At execution time, they are converted to <code>flat_map</code> of a closure that returns <code>Option&lt;Capture&gt;</code>.</p>
+<details>
+<summary>Commit summary <a href='https://github.com/pkhuong/timely-coherent-logic/commit/6b8b718116dc6a1d01fa2ae32701649beeea71e9?diff=unified#toc'>(GH)</a></summary>
+<pre> .../src/execution/lower_plan.rs                    | 144 <span style='color: green'>++++++++++++++++++++</span><span style='color: red'>-</span>
+ timely-coherent-propagator/src/matching/plan.rs    |  69 <span style='color: green'>+++++++++</span><span style='color: red'>-</span>
+ 2 files changed, 211 insertions(+), 2 deletions(-)
+</pre>
+</details>
+<h4 id="matchingplan-executionlower_plan-add-project-nodes-diff">matching/plan, execution/lower_plan: add Project nodes <a href='https://github.com/pkhuong/timely-coherent-logic/commit/95563ad33eeb78dd41c84821442746a9478fca02?diff=unified#toc'>(diff)</a></h4>
+<p>We’ll sometimes capture useless metavars, and often want to get rid of metavars that are only relevant for a join, and not afterwards. Projections are parameterised on an input shape and a list of metavars we wish to keep; they accept captures matching the input shape, and yield captures matching the “kept” list.</p>
+<p>At execution-time, these nodes turn into <code>map</code> of closures from <code>Capture</code> to <code>Capture</code>.</p>
+<details>
+<summary>Commit summary <a href='https://github.com/pkhuong/timely-coherent-logic/commit/95563ad33eeb78dd41c84821442746a9478fca02?diff=unified#toc'>(GH)</a></summary>
+<pre> .../src/execution/lower_plan.rs                    | 77 <span style='color: green'>+++++++++++++++++++++</span><span style='color: red'>-</span>
+ timely-coherent-propagator/src/matching/plan.rs    | 61 <span style='color: green'>++++++++++++++++</span><span style='color: red'>-</span>
+ 2 files changed, 136 insertions(+), 2 deletions(-)
+</pre>
+</details>
+<h4 id="matchingplan-executionlower_plan-add-join-nodes-diff">matching/plan, execution/lower_plan: add Join nodes <a href='https://github.com/pkhuong/timely-coherent-logic/commit/4ca0aaf6327ea4440fc6e1a11164de6584559255?diff=unified#toc'>(diff)</a></h4>
+<p>Joins are parameterised on a join key (a list of metavars), a list of metavars that are still interesting after the join, and a list of input shapes.</p>
+<p>A join node extract variable values corresponding to the “key” metavars in each input, matches up the corresponding values, and yields the variable values for the “kept” metavars, for each match.</p>
+<p>The natural join is a convenience layer on top of the join node that matches inputs on all metavars that exist in all nodes, and yields all metavars that are uniquely defined (either in the join key, or only appears in one input).</p>
+<p>At execution time, these nodes first apply a <code>map</code> to every input to tag <code>Capture</code> values with the join key, followed by a <code>join_map</code> operation, where a <code>MultiProject</code> extracts the metavars in the kept list from all the inputs.</p>
+<p>For now, it’s only possible to construct joins of exactly two inputs; this also simplifies the definition of a natural join.</p>
+<details>
+<summary>Commit summary <a href='https://github.com/pkhuong/timely-coherent-logic/commit/4ca0aaf6327ea4440fc6e1a11164de6584559255?diff=unified#toc'>(GH)</a></summary>
+<pre> .../src/execution/lower_plan.rs                    | 136 <span style='color: green'>+++++++</span><span style='color: red'>-</span>
+ timely-coherent-propagator/src/matching/plan.rs    | 363 <span style='color: green'>++++++++++++++++++++</span><span style='color: red'>-</span>
+ 2 files changed, 497 insertions(+), 2 deletions(-)
+</pre>
+</details>
+<h4 id="matchingplanner-add-plan_constraint-constraint---plan-diff">matching/planner: add plan_constraint, Constraint -&gt; Plan <a href='https://github.com/pkhuong/timely-coherent-logic/commit/d83eb205a91adea7b42af144dfb6b1d33c3fc5ac?diff=unified#toc'>(diff)</a></h4>
+<p>Given a constraint (set of predicate formulae that must all hold, annotated with a set of captured metavars), generates a plan to list all captures matching that constraint.</p>
+<details>
+<summary>Commit summary <a href='https://github.com/pkhuong/timely-coherent-logic/commit/d83eb205a91adea7b42af144dfb6b1d33c3fc5ac?diff=unified#toc'>(GH)</a></summary>
+<pre> .../src/matching/expression.rs                     |   2 <span style='color: green'>+</span><span style='color: red'>-</span>
+ timely-coherent-propagator/src/matching/mod.rs     |   2 <span style='color: green'>+</span>
+ .../src/matching/planner.rs (new)                  | 111 <span style='color: green'>+++++++++++++++++++++</span>
+ 3 files changed, 114 insertions(+), 1 deletion(-)
+</pre>
+</details>
+<h1 id="a-trivial-and-naïve-datalog-engine">A trivial and naïve Datalog engine</h1>
+<p>Now that we know how to match antecedents in coherence logic sequences, we can implement a datalog engine to apply all rules that fit the datalog model until saturation. Such “trivial” rules are all the rules without disjunctions nor existential in the consequent: in order to apply these rules, we don’t have to pick what pattern to instantiate, nor generate a new variable.</p>
+<p>We already have the matching half of a bottom-up datalog engine. We simply have to convert <code>Capture</code>s to <code>Fact</code>s, and to tie the knot for DD to compute a fixpoint for us.</p>
+<h4 id="executioninstantiate_conjuncts-pattern---capture---fact-diff">execution/instantiate_conjuncts: Pattern -&gt; Capture -&gt; Fact <a href='https://github.com/pkhuong/timely-coherent-logic/commit/53d81de2f7e88fdf11658901acc3d4fbf57cfa4d?diff=unified#toc'>(diff)</a></h4>
+<p>We already have matching in <code>lower_plan</code>; this new module implements <code>push_conjunct_instances</code>, the instantiation half of a bottom-up datalog implementation.</p>
+<p>The helper <code>reify_conjunct_instances</code> is mostly useful for testing.</p>
+<details>
+<summary>Commit summary <a href='https://github.com/pkhuong/timely-coherent-logic/commit/53d81de2f7e88fdf11658901acc3d4fbf57cfa4d?diff=unified#toc'>(GH)</a></summary>
+<pre> .../src/execution/instantiate_conjuncts.rs (new)   | 233 <span style='color: green'>+++++++++++++++++++++</span>
+ timely-coherent-propagator/src/execution/mod.rs    |   3 <span style='color: green'>+</span>
+ 2 files changed, 236 insertions(+)
+</pre>
+</details>
+<h4 id="executiontrivial-bottom-up-naive-evaluator-for-trivial-sequents-diff">execution/trivial: bottom-up naive evaluator for trivial sequents <a href='https://github.com/pkhuong/timely-coherent-logic/commit/533da04382ca36d0b3c00b1791c56d2bac1c9157?diff=unified#toc'>(diff)</a></h4>
+<p>We handle trivial rules with a naive datalog evaluator.</p>
+<details>
+<summary>Commit summary <a href='https://github.com/pkhuong/timely-coherent-logic/commit/533da04382ca36d0b3c00b1791c56d2bac1c9157?diff=unified#toc'>(GH)</a></summary>
+<pre> timely-coherent-propagator/src/execution/mod.rs    |   3 <span style='color: green'>+</span>
+ .../src/execution/trivial.rs (new)                 | 913 <span style='color: green'>+++++++++++++++++++++</span>
+ 2 files changed, 916 insertions(+)
+</pre>
+</details>
+<h1 id="matching-full-blown-sequents">Matching full-blown sequents</h1>
+<p>The datalog engine handles trivial sequents. We now have to do something about sequents that make us choose what to derive from a given left-hand side <code>Capture</code>, or sequents with existentials in the consequents (i.e., consequents that introduce new variables).</p>
+<p>We’ll defer these decisions to higher-level modules than the propagator; we simply want to report the list of all decisions there are to be made, i.e., generate a collection of matched <code>Capture</code>s for each sequent.</p>
+<p>And this “matching” of non-trivial rules is where we implement something subtle and specific to coherent logic: whenever a sequent’s consequents are already satisfied for a given capture, we must do nothing. The benefit is clear: we can cut down on a lot of useless instantiations. What’s more surprising is that we can still prove a lot of theorems with this restriction.</p>
+<p>What do we specifically mean by “consequents are already satisfied?” Consequents are disjunctions of conjunctions; if even one conjunction is already known to be true, we don’t want to instantiate anything. Logically, this makes sense: if we have <span class="math inline"><em>x</em> ∨ <em>y</em></span> as the right-hand side of an implication, but we already know <span class="math inline"><em>x</em></span>, the implication is vacuous.</p>
+<p>We know a conjunction is true when the result of instantiating it with the candidate <code>Capture</code> is already in our collections of facts. It’s a bit subtle when there’s an existential: a consequent like <span class="math inline">∃<em>y</em>.<em>p</em>(<em>x</em>, <em>y</em>)</span> is satisfied whenever we can find a match for <span class="math inline"><em>p</em>(<em>x</em>,<sub>)</sub></span>, i.e., whenever <span class="math inline">∀<em>y</em>.<em>p</em>(<em>x</em>, <em>y</em>)</span> yields a non-empty set of matches.</p>
+<p>This is starting to sound very similar to our left-hand side matching logic. In fact, if we pretend the <span class="math inline">∃</span> are <span class="math inline">∀</span>, it’s the exact same thing! The only difference is that we may have multiple such right-hand side joins for a single sequent, since a sequents’s consequents form a <em>disjunction</em>.</p>
+<p>For each such right-hand side joins, we will look at the matched <code>Capture</code>s and <em>anti</em>-join them from the left-hand side <code>Capture</code>s, to disable any <code>Capture</code> that would yield a right-hand side that is already known.</p>
+<h4 id="matchingplan-executionlower_plan-add-antijoin-nodes-diff">matching/plan, execution/lower_plan: add Antijoin nodes <a href='https://github.com/pkhuong/timely-coherent-logic/commit/bbaef6a82cf1ee9aaa4801b0a63f369690d129cc?diff=unified#toc'>(diff)</a></h4>
+<p>A key peculiarity of coherent logic is that it can implement <em>some</em> existentials in consequents, by noticing when a consequent is already satisfied, and not considering corresponding instances of a sequent.</p>
+<p>We will implement this negative matching by matching on a sequent’s consequents, and antijoining the result from the antecendents’ potential matches.</p>
+<details>
+<summary>Commit summary <a href='https://github.com/pkhuong/timely-coherent-logic/commit/bbaef6a82cf1ee9aaa4801b0a63f369690d129cc?diff=unified#toc'>(GH)</a></summary>
+<pre> .../src/execution/lower_plan.rs                    | 197 <span style='color: green'>++++++++++++++++++++</span><span style='color: red'>-</span>
+ timely-coherent-propagator/src/matching/plan.rs    | 150 <span style='color: green'>++++++++++++++++</span>
+ 2 files changed, 346 insertions(+), 1 deletion(-)
+</pre>
+</details>
+<h4 id="matchingplanner-add-plan_sequent-to-match-for-a-full-sequent-diff">matching/planner: add plan_sequent to match for a full sequent <a href='https://github.com/pkhuong/timely-coherent-logic/commit/80f1c2287b56bbf834d9e1e7a3c5d25c25b87164?diff=unified#toc'>(diff)</a></h4>
+<p>Including disabling matches with consequents that are already satisfied.</p>
+<details>
+<summary>Commit summary <a href='https://github.com/pkhuong/timely-coherent-logic/commit/80f1c2287b56bbf834d9e1e7a3c5d25c25b87164?diff=unified#toc'>(GH)</a></summary>
+<pre> timely-coherent-propagator/src/matching/mod.rs     |   1 <span style='color: green'>+</span>
+ timely-coherent-propagator/src/matching/planner.rs | 129 <span style='color: green'>++++++++++++++++++++</span><span style='color: red'>-</span>
+ 2 files changed, 129 insertions(+), 1 deletion(-)
+</pre>
+</details>
+<h4 id="executionenumerate_candidates-find-instantiation-candidates-diff">execution/enumerate_candidates: find instantiation candidates <a href='https://github.com/pkhuong/timely-coherent-logic/commit/e7eb82edb9f611df866d6375c1d4a49e12ccfbd6?diff=unified#toc'>(diff)</a></h4>
+<p>Non-trivial sequents (with existentials and/or multiple conjunctions on the right-hand side) can’t be handled directly as part of a datalog fixpoint: there may well be no (finite) fixpoint.</p>
+<p>Instead, enumerate everything that could be instantiated, and let a higher-level process decide what to feed back in the input collections of facts.</p>
+<details>
+<summary>Commit summary <a href='https://github.com/pkhuong/timely-coherent-logic/commit/e7eb82edb9f611df866d6375c1d4a49e12ccfbd6?diff=unified#toc'>(GH)</a></summary>
+<pre> .../src/execution/enumerate_candidates.rs (new)    | 562 <span style='color: green'>+++++++++++++++++++++</span>
+ timely-coherent-propagator/src/execution/mod.rs    |   3 <span style='color: green'>+</span>
+ 2 files changed, 565 insertions(+)
+</pre>
+</details>
+<h1 id="add-support-for-constants-in-patterns">Add support for constants in patterns</h1>
+<p>Until now, our unification subsystem has only supported <code>MetaVar</code>s; the patterns were still interesting because the same <code>MetaVar</code>s could appear multiple times, in which case it had to always match the same variable.</p>
+<p>Let’s now add support for literal constants. For example, we might want to match <span class="math inline">∀<em>x</em>.<em>p</em>(<em>a</em>, <em>x</em>)</span>, where <span class="math inline"><em>a</em></span> is a predefined constant. We can also use the same functionality in consequents, for example, <span class="math inline">∀<em>x</em>.<em>p</em>(<em>x</em>) ⇒ <em>g</em><em>t</em><em>e</em>(<em>x</em>, <em>z</em><em>e</em><em>r</em><em>o</em>)</span>.</p>
+<p>With literal constants, the propagator can now handle everything in coherent logic!</p>
+<h4 id="unificationpattern-add-support-for-literal-constant-in-patterns-diff">unification/pattern: add support for literal Constant in patterns <a href='https://github.com/pkhuong/timely-coherent-logic/commit/04a9cce3f88a838b54e756f22a71c8c6a93a6a22?diff=unified#toc'>(diff)</a></h4>
+<p>This lets us express patterns and templates where a certain slot (e.g., the first variable in a fact) is always the same constant variable.</p>
+<details>
+<summary>Commit summary <a href='https://github.com/pkhuong/timely-coherent-logic/commit/04a9cce3f88a838b54e756f22a71c8c6a93a6a22?diff=unified#toc'>(GH)</a></summary>
+<pre> .../src/matching/expression.rs                     |   6 <span style='color: green'>+</span><span style='color: red'>-</span>
+ .../src/unification/pattern.rs                     | 195 <span style='color: green'>++++++++++++++++++</span><span style='color: red'>---</span>
+ 2 files changed, 178 insertions(+), 23 deletions(-)
+</pre>
+</details>
+<h4 id="deduce-hook-up-trivial-and-enumerate_candidates-together-diff">deduce: hook up trivial and enumerate_candidates together <a href='https://github.com/pkhuong/timely-coherent-logic/commit/5b32c4f7b149a91b1598fe0f19426907137b19e5?diff=unified#toc'>(diff)</a></h4>
+<p>The function <code>deduction_graph_from_sequents</code> accepts a timely scope, a vector of trivial and another of search sequents, and constructs a dataflow graph to propagate facts to trivial sequents, and hooks that up to another dataflow graph that finds potential instances for search sequents. That dataflow graph is constructed in the timely scope, but hidden; the function returns only the graph’s input and output nodes.</p>
+<details>
+<summary>Commit summary <a href='https://github.com/pkhuong/timely-coherent-logic/commit/5b32c4f7b149a91b1598fe0f19426907137b19e5?diff=unified#toc'>(GH)</a></summary>
+<pre> timely-coherent-propagator/src/deduce.rs (new) | 801 <span style='color: green'>+++++++++++++++++++++++++</span>
+ timely-coherent-propagator/src/lib.rs          |   1 <span style='color: green'>+</span>
+ 2 files changed, 802 insertions(+)
+</pre>
+</details>
+<h1 id="satumerator-howto-prove-you-tried-everything-diff">satumerator: HOWTO prove you tried everything <a href='https://github.com/pkhuong/timely-coherent-logic/commit/71497baf864730d8ffe1383eeacddab20382f2ce?diff=unified#toc'>(diff)</a></h1>
+<p>Discrete search problems, like theorem proving, often resort to implicit tree enumeration not because it’s a good strategy, but because it’s a simple way to guarantee the search is exhaustive.</p>
+<p>SAT solvers have shown us that traversing an implicit tree is a bad strategy for hard, but tractable, problems. We really want the ability to generalise whenever we close a branch, and thus avoid exploring similar neighbours; we would also prefer to be able to switch up the tree traversal order dynamically, without losing all the progress we’ve made until then.</p>
+<p>Satumerator uses <code>CryptoMiniSat</code> to expose a high level “nogood” learning interface for arbitrary, potentially infinite, discrete search problems. The approach is based on <a href="https://jix.one/">Jannis Harder</a>’s <a href="https://github.com/jix/minimal_models_example">model minimisation demo</a>; we feed regular “nogood” constraints to one solver, and a <a href="https://en.wikipedia.org/wiki/Tseytin_transformation">Tseitin-transformed</a> version of the same constraints to another.</p>
+<p>This lets us ask the first solver whether we’re done searching, and get a witness of a “gap” in the nogoods if we still have work to do. Given this witness (or any partial assignment), we then use the second solver to detect whether there exists an extension of the assignment that is forbidden by a nogood; our goal is to generate small partial assignments such that we can arbitrarily dive down from that initial state and not find ourselves exploring a region of the search space that’s already covered by a nogood.</p>
+<p>In addition to regular “nogood” clauses, Satumerator also supports domain constraints of the form “exactly one of x, y, z must be true in any valid assignment.” These constraints let us express discrete choices, for example, when one of three patterns may be instantiated in a sequent.</p>
+<p>Given these constraints, we can also generate “gap” witness that only fix variables to true; that’s useful in search problems, like our coherent logic prover, where we can generate a fact from <code>x = true</code>, but not really do anything with <code>y = false</code> (do not instantiate a given pattern, without knowing whether to instantiate any of the other options, or which).</p>
+<details>
+<summary>Commit summary <a href='https://github.com/pkhuong/timely-coherent-logic/commit/71497baf864730d8ffe1383eeacddab20382f2ce?diff=unified#toc'>(GH)</a></summary>
+<pre> Cargo.toml                   |   2 <span style='color: green'>+</span><span style='color: red'>-</span>
+ satumerator/Cargo.toml (new) |  13 <span style='color: green'>++++</span>
+ satumerator/README.md (new)  | 178 <span style='color: green'>+++++++++++++++++++++++++++++++++++++++++++</span>
+ satumerator/src/lib.rs (new) |   0
+ satumerator/x.toml (new)     |  11 <span style='color: green'>+++</span>
+ 5 files changed, 203 insertions(+), 1 deletion(-)
+</pre>
+</details>
+<h1 id="initial-piping">Initial piping</h1>
+<p>The bare minimum to start plugging components together is the idea of an “atom,” which can be true, false, or unknown (irrelevant) in a given state.</p>
+<h4 id="kb-typed-wrappers-to-represent-known-facts-about-the-search-problem-diff">kb: typed wrappers to represent known facts about the search problem <a href='https://github.com/pkhuong/timely-coherent-logic/commit/994590aa09e355030c9d28e21fb89af62115a38a?diff=unified#toc'>(diff)</a></h4>
+<p>The whole Satumerator interface is unfortunately extremely generic; we’ll figure out a way to make the implementation more concrete later, once we have a fingerprint trait.</p>
+<details>
+<summary>Commit summary <a href='https://github.com/pkhuong/timely-coherent-logic/commit/994590aa09e355030c9d28e21fb89af62115a38a?diff=unified#toc'>(GH)</a></summary>
+<pre> satumerator/src/kb.rs (new) | 15 <span style='color: green'>+++++++++++++++</span>
+ satumerator/src/lib.rs      |  3 <span style='color: green'>+++</span>
+ 2 files changed, 18 insertions(+)
+</pre>
+</details>
+<h4 id="solver_state-maintain-a-lit---higher-level-signification-map-diff">solver_state: maintain a Lit &lt;-&gt; higher-level signification map <a href='https://github.com/pkhuong/timely-coherent-logic/commit/2704ee9e0a8e6f80a23ec48bf0cb589e5037ff2b?diff=unified#toc'>(diff)</a></h4>
+<p>And keep that mapping synchronised with a CryptoMiniSat solver.</p>
+<details>
+<summary>Commit summary <a href='https://github.com/pkhuong/timely-coherent-logic/commit/2704ee9e0a8e6f80a23ec48bf0cb589e5037ff2b?diff=unified#toc'>(GH)</a></summary>
+<pre> satumerator/src/lib.rs                |   1 <span style='color: green'>+</span>
+ satumerator/src/solver_state.rs (new) | 148 <span style='color: green'>++++++++++++++++++++++++++++++++++</span>
+ 2 files changed, 149 insertions(+)
+</pre>
+</details>
+<h4 id="backend-minimally-tie-all-the-pieces-together-diff">backend: minimally tie all the pieces together <a href='https://github.com/pkhuong/timely-coherent-logic/commit/500e06866b3bb644056e1953a8ddcecc1246a28d?diff=unified#toc'>(diff)</a></h4>
+<p>We simple nogoods with only positive variables.</p>
+<details>
+<summary>Commit summary <a href='https://github.com/pkhuong/timely-coherent-logic/commit/500e06866b3bb644056e1953a8ddcecc1246a28d?diff=unified#toc'>(GH)</a></summary>
+<pre> satumerator/src/backend.rs (new) | 73 <span style='color: green'>++++++++++++++++++++++++++++++++++++++++</span>
+ satumerator/src/lib.rs           |  2 <span style='color: green'>++</span>
+ 2 files changed, 75 insertions(+)
+</pre>
+</details>
+<h1 id="start-tracking-simple-nogoods">start tracking simple nogoods</h1>
+<p>Our initial use case can only use partial assignments in the form of positive truth values; we can’t easily use or even generate <code>x = false</code>. That’s a common situation for simple tree search algorithms without any bounding procedure.</p>
+<p>We’ll start by supporting only that use case, with nogoods that can only include partial assignments for <code>x = true</code>.</p>
+<h4 id="kb-add-fathomedregion-diff">kb: add FathomedRegion <a href='https://github.com/pkhuong/timely-coherent-logic/commit/e87ede9939c8989a291b2fe420188061a54b7096?diff=unified#toc'>(diff)</a></h4>
+<details>
+<summary>Commit summary <a href='https://github.com/pkhuong/timely-coherent-logic/commit/e87ede9939c8989a291b2fe420188061a54b7096?diff=unified#toc'>(GH)</a></summary>
+<pre> satumerator/src/kb.rs  | 20 <span style='color: green'>++++++++++++++++++++</span>
+ satumerator/src/lib.rs |  1 <span style='color: green'>+</span>
+ 2 files changed, 21 insertions(+)
+</pre>
+</details>
+<h4 id="gadgets-cnf-encoding-for-our-nogood-constraints-diff">gadgets: CNF encoding for our nogood constraints <a href='https://github.com/pkhuong/timely-coherent-logic/commit/d497b3f60f27391d3697c0cf2fbc48d08b3e2ecf?diff=unified#toc'>(diff)</a></h4>
+<p>The only non-trivial bit is the way we need to use Tseitin’s encoding trick to be able to negate the nogood constraints without an exponential blow-up. Negation will be useful when coarsening a feasible assignment to remove useless variables.</p>
+<details>
+<summary>Commit summary <a href='https://github.com/pkhuong/timely-coherent-logic/commit/d497b3f60f27391d3697c0cf2fbc48d08b3e2ecf?diff=unified#toc'>(GH)</a></summary>
+<pre> satumerator/src/gadgets.rs (new) | 50 <span style='color: green'>++++++++++++++++++++++++++++++++++++++++</span>
+ satumerator/src/lib.rs           |  1 <span style='color: green'>+</span>
+ 2 files changed, 51 insertions(+)
+</pre>
+</details>
+<h4 id="backend-add-nogood-diff">backend: add nogood <a href='https://github.com/pkhuong/timely-coherent-logic/commit/80101aefa9bb60772d032e2ddcd41838697f88cb?diff=unified#toc'>(diff)</a></h4>
+<details>
+<summary>Commit summary <a href='https://github.com/pkhuong/timely-coherent-logic/commit/80101aefa9bb60772d032e2ddcd41838697f88cb?diff=unified#toc'>(GH)</a></summary>
+<pre> satumerator/src/backend.rs | 54 <span style='color: green'>++++++++++++++++++++++++++++++++++++++++++++++</span>
+ 1 file changed, 54 insertions(+)
+</pre>
+</details>
+<h4 id="kb-add-a-representation-for-choice-constraints-diff">kb: add a representation for “choice” constraints <a href='https://github.com/pkhuong/timely-coherent-logic/commit/d890118e23a64cfc2b37f9f04805027741f472e9?diff=unified#toc'>(diff)</a></h4>
+<details>
+<summary>Commit summary <a href='https://github.com/pkhuong/timely-coherent-logic/commit/d890118e23a64cfc2b37f9f04805027741f472e9?diff=unified#toc'>(GH)</a></summary>
+<pre> satumerator/src/kb.rs  | 19 <span style='color: green'>+++++++++++++++++++</span>
+ satumerator/src/lib.rs |  1 <span style='color: green'>+</span>
+ 2 files changed, 20 insertions(+)
+</pre>
+</details>
+<h1 id="add-domain-constraints">add domain constraints</h1>
+<p>When we can only describe regions in terms of <code>x = true</code>, we need more structure on top of boolean values: every variable must be part of at least one “exactly one of these variables is true” constraint.</p>
+<p>“Exactly one” is the intersection of “at most one” and “at least one,” and we need both:</p>
+<ol type="1">
+<li><p>We need “at most one” because we can’t work with partial assignments like “x = false”; we can instead use “y = true”, when we know that at most one of <code>x, y, ...</code> must be true.</p></li>
+<li><p>We need at least one in order to guarantee “x = false, y = false, …” isn’t a valid assignment. We know we can that <code>x = false</code> assignments are redundant when we have an “at most one” constraint, but that only works when some other variable in the choice constraint is set to true. “At least one” guarantees that this will always be the case.</p></li>
+</ol>
+<h4 id="gadgets-add-cardinality-constraint-gadgets-diff">gadgets: add cardinality constraint gadgets <a href='https://github.com/pkhuong/timely-coherent-logic/commit/74a6fd983d354e5d1793b49742d10eb39eee8ae2?diff=unified#toc'>(diff)</a></h4>
+<details>
+<summary>Commit summary <a href='https://github.com/pkhuong/timely-coherent-logic/commit/74a6fd983d354e5d1793b49742d10eb39eee8ae2?diff=unified#toc'>(GH)</a></summary>
+<pre> satumerator/src/gadgets.rs | 126 <span style='color: green'>+++++++++++++++++++++++++++++++++++++++++++++</span>
+ 1 file changed, 126 insertions(+)
+</pre>
+</details>
+<h4 id="backend-implement-choose-exactly-one-domain-constraints-diff">backend: implement “choose exactly one” domain constraints <a href='https://github.com/pkhuong/timely-coherent-logic/commit/3b24a9bdbb0b498e06c023be795392afc1977360?diff=unified#toc'>(diff)</a></h4>
+<details>
+<summary>Commit summary <a href='https://github.com/pkhuong/timely-coherent-logic/commit/3b24a9bdbb0b498e06c023be795392afc1977360?diff=unified#toc'>(GH)</a></summary>
+<pre> satumerator/src/backend.rs | 83 <span style='color: green'>+++++++++++++++++++++++++++++++++++++++++++++</span><span style='color: red'>-</span>
+ 1 file changed, 82 insertions(+), 1 deletion(-)
+</pre>
+</details>
+<h1 id="construct-a-complemented-checker-sat-state">construct a “complemented” checker SAT state</h1>
+<p>We currently have a SAT state to which we can add nogoods and domain constraints, in order to ask if we’re done searching yet.</p>
+<p>We also want to improve partial assignment by removing redundant assignments: the gap (inexhaustiveness) witness we received from the currently existing SAT state gives a value to all variables declared so far. While true, this assignment is too eager to be useful: we can hopefully find a smaller partial assignment such that no (valid) extension of that smaller assignment is covered by the nogoods.</p>
+<p>The usual trick to answer <code>forall x, p(x)</code> in SAT is to flip the expression and work with <code>exists x, !p(x)</code>: if there is no <code>x</code> that falsifies <code>p(x)</code>, then <code>p(x)</code> holds for all <code>x</code>. That’s what we’ll do here…</p>
+<p>But that requires a SAT formulation for <code>!p(x)</code>, and, while it’s easy to convert nogood constraints to CNF, the complement can easily explode. We’ll use Tseitin’s encoding trick: rather than directly adding a constraint for a given expression, we’ll add an output variable and constrain that variable to take the same truth value as the expression. At the end of it all, we can force the output variable to false (with a temporary assumption), and that’s equivalent to forcing the expression to be violated.</p>
+<p>Given a partial assignment, we can ask SAT to extend it while respecting the domain constraints, and while violating at least one of the nogoods. What we’re hoping for is a negative (UNSAT) answer: this means the partial assignment is such that any extension isn’t forbidden by the nogoods.</p>
+<p>When we get UNSAT, we can ask CryptoMiniSat for a conflict set from our initial assumptions. This conflict set tells us that, as long as all these conflict assumptions are kept, the instance will remain UNSAT… i.e., these conflict assumptions suffice to prevent the partial assignment from overlapping with any nogood.</p>
+<p>We will also find our Tseitin output variable in the conflict set, but that’s OK: we don’t want to change that variable’s value, so we can ignore it.</p>
+<h4 id="gadget-add-tseitin-encodings-for-nogoods-and-or-gates-diff">gadget: add Tseitin encodings for nogoods and <code>or</code> gates <a href='https://github.com/pkhuong/timely-coherent-logic/commit/5263f530d0a6f9b2e52127742518c41753e718f4?diff=unified#toc'>(diff)</a></h4>
+<details>
+<summary>Commit summary <a href='https://github.com/pkhuong/timely-coherent-logic/commit/5263f530d0a6f9b2e52127742518c41753e718f4?diff=unified#toc'>(GH)</a></summary>
+<pre> satumerator/src/gadgets.rs | 157 <span style='color: green'>+++++++++++++++++++++++++++++++++++++++++++++</span>
+ 1 file changed, 157 insertions(+)
+</pre>
+</details>
+<h4 id="solver_state-add-support-for-parallel-tseitin-encoded-solver-diff">solver_state: add support for parallel Tseitin encoded solver <a href='https://github.com/pkhuong/timely-coherent-logic/commit/7b509565f75290b760b06932b14433156a92f799?diff=unified#toc'>(diff)</a></h4>
+<details>
+<summary>Commit summary <a href='https://github.com/pkhuong/timely-coherent-logic/commit/7b509565f75290b760b06932b14433156a92f799?diff=unified#toc'>(GH)</a></summary>
+<pre> satumerator/src/solver_state.rs | 36 <span style='color: green'>++++++++++++++++++++++++++++++++++++</span>
+ 1 file changed, 36 insertions(+)
+</pre>
+</details>
+<h4 id="backend-add-domain-and-tseitin-nogood-to-tseitin-checker-diff">backend: add domain and tseitin nogood to tseitin checker <a href='https://github.com/pkhuong/timely-coherent-logic/commit/48cbcd76ff30950a2060c2f08f08e3f43a6fc7e1?diff=unified#toc'>(diff)</a></h4>
+<details>
+<summary>Commit summary <a href='https://github.com/pkhuong/timely-coherent-logic/commit/48cbcd76ff30950a2060c2f08f08e3f43a6fc7e1?diff=unified#toc'>(GH)</a></summary>
+<pre> satumerator/src/backend.rs | 25 <span style='color: green'>+++++++++++++++++++++</span><span style='color: red'>----</span>
+ 1 file changed, 21 insertions(+), 4 deletions(-)
+</pre>
+</details>
+<h1 id="check-and-reduce-assignments-with-tseitin">Check and reduce assignments with Tseitin</h1>
+<p>Given a partial assignment <code>a</code>, we want to know if there exists an extension <code>x</code> of <code>a</code> such that:</p>
+<ol type="1">
+<li><code>x</code> satisfies the domain constraints</li>
+<li><code>x</code> violates at least one of the nogoods</li>
+</ol>
+<p>Really, we want to know when that’s impossible, i.e., forall valid extensions <code>x</code> of <code>a</code>, <code>x</code> does not violate any nogood, but SAT works with proofs of existence.</p>
+<p>The Tseitin solver contains a set of clauses which guarantees that the current “output” variable will be true iff <code>x</code> violates one of the nogoods.</p>
+<p>We can thus check if a given partial assignment is disjoint from the nogoods by asking the Tseitin SAT solver to find us an extension (solve with the assumptions that <code>output = true</code>, plus all the partial assignment <code>a</code> itself). If it finds one, we know the assignment is not disjoint.</p>
+<p>If <code>CryptoMiniSat</code> proves that there is no such extension (i.e., the partial assignment is disjoint), it will also return a learned clause, derived from the clauses in the solver (but not the assumptions) such that the learned clause contradicts the assumptions.</p>
+<p>Every literal in the learned (CNF) clause appears in the assumptions (otherwise there would be some degree of freedom to avoid a contradiction), and is the negation of the assumption: if <code>x = true</code> is in the learned disjunctive clause and in the assumptions, the learned clause is satisfied by <code>x = true</code>, and there is no contradiction.</p>
+<p>Anything in the assumptions that does not appear in the learned clause is redundant for disjointedness: our partial assignment is disjoint from the nogoods as long as the Tseitin system is UNSAT, and any assignment that contradicts the learned clause implies UNSAT. We can thus drop assumption that does not appear in the learned clause.</p>
+<p>Now, the learned clauses are a side-effect of the CDCL solving process, and there is no guarantee on their quality. Of course, we can’t expect a minimum conflict: that’s too hard. Perhaps surprisingly, we’re not guaranteed to have a minimal conflict either!</p>
+<p>If we really want to reduce the partial assignment while preserving disjointedness, we want to probe every variable in the assignment. We’ll remove that variable from the assumptions, and see if the result is still UNSAT: if so, we don’t need the variable, and we can use the learned clause to detect that some other variables are also redundant. If the system is not satisfiable, we know removing the variable loses disjointedness, so we add it to a set of mandatory variables.</p>
+<p>Once we’ve probed every variable in the assumptions (or dropped them due to learned clauses), the set of mandatory variables is a minimal disjoint partial assignment: removing anything from that list introduces some overlap between the nogoods and the assignment’s extensions.</p>
+<p>One might have a really good idea about the “best” order in which to probe variables, maybe as part of some GRASP heuristic. That’s why we also offer pure probing-based reduction, without any input from learned clauses.</p>
+<h4 id="backend-use-the-tseitin-encoded-solver-to-check-partial-assignments-diff">backend: use the Tseitin-encoded solver to check partial assignments <a href='https://github.com/pkhuong/timely-coherent-logic/commit/7a8378ec942bb12f349d4fd6558d1b5c44e3b708?diff=unified#toc'>(diff)</a></h4>
+<details>
+<summary>Commit summary <a href='https://github.com/pkhuong/timely-coherent-logic/commit/7a8378ec942bb12f349d4fd6558d1b5c44e3b708?diff=unified#toc'>(GH)</a></summary>
+<pre> satumerator/src/backend.rs | 396 <span style='color: green'>+++++++++++++++++++++++++++++++++++++++++++</span><span style='color: red'>--</span>
+ 1 file changed, 387 insertions(+), 9 deletions(-)
+</pre>
+</details>
+<h1 id="positivesatumerator-satumerate-only-with-truths-diff"><code>PositiveSatumerator</code>: Satumerate only with truths <a href='https://github.com/pkhuong/timely-coherent-logic/commit/46999e13d5ed23e54682193a81165c44889d7dc2?diff=unified#toc'>(diff)</a></h1>
+<p>The search problem in our coherent logic prover is more naturally seen as a exploring a rose-tree with multi-way branches than a binary tree. It doesn’t really mean much to know that a given consequent should <em>not</em> be instantiated; we really want to know which of the others might be interesting.</p>
+<p>The <code>PositiveSatumerator</code> exposes a more restricted interface, where every decision variable (consequent to instantiate or not instantiate) must be bound by an “exactly one of” cardinality constraint, and all “nogoods” must only include variables set to true. In fact, the interface only accepts a set of variables as nogoods, without any associated truth value (the variables must be true in the forbidden region), and represents partial assignments as vectors of variables (atoms), with an implicit “true” value.</p>
+<details>
+<summary>Commit summary <a href='https://github.com/pkhuong/timely-coherent-logic/commit/46999e13d5ed23e54682193a81165c44889d7dc2?diff=unified#toc'>(GH)</a></summary>
+<pre> satumerator/src/lib.rs | 246 <span style='color: green'>+++++++++++++++++++++++++++++++++++++++++++++++++</span>
+ 1 file changed, 246 insertions(+)</pre>
+</details>
+</body>
+</html>
