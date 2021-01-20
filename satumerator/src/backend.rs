@@ -21,7 +21,10 @@ pub enum AssignmentReductionPolicy {
     /// Check that the input assignment is valid, and stop after using
     /// the conflict information from that one solve.
     OneShot,
-    /// Take any hint we can get.  The result is minimal, but may
+    /// Probe each literal in back-to-front order.  The result is
+    /// minimal.
+    StrictlyInOrder,
+    /// Take any hint we can get.  The result is also minimal, but may
     /// remove literals out of order.
     Greedy,
 }
@@ -106,17 +109,25 @@ impl<A: StateAtom> Impl<A> {
         assignment: Vec<(A, bool)>,
         reduction_policy: AssignmentReductionPolicy,
     ) -> Result<Vec<(A, bool)>, &'static str> {
-        use AssignmentReductionPolicy::{Greedy, Noop, OneShot};
+        use AssignmentReductionPolicy::{Greedy, Noop, OneShot, StrictlyInOrder};
 
         let (use_conflict, probe_loop) = match reduction_policy {
             Noop => (false, false),
             OneShot => (true, false),
+            // When reducing strictly in order, we can't use
+            // `CryptoMiniSat`'s heuristic conflict.
+            StrictlyInOrder => (false, true),
             Greedy => (true, true),
         };
 
         match self.sat_state.tseitin_checker().1 {
             None => Ok(vec![]),
             Some(output) => {
+                // Cache for the set of literals that appeared in the
+                // last conflict.  We only take the last conflict into
+                // account because earlier conflicts might depend on
+                // literals that have since been dropped.
+                let mut last_conflict: BTreeSet<Lit>;
                 // Set of literals that we probed and know are
                 // necessary for this reduction order.
                 let mut mandatory = BTreeSet::new();
@@ -127,7 +138,7 @@ impl<A: StateAtom> Impl<A> {
                 // Constructs a new `candidates` vector from a
                 // conflict information.
                 let update_candidates =
-                    |candidates: Vec<Lit>, mandatory: &BTreeSet<Lit>, conflict: BTreeSet<Lit>| {
+                    |candidates: Vec<Lit>, mandatory: &BTreeSet<Lit>, conflict: &BTreeSet<Lit>| {
                         if use_conflict {
                             candidates
                                 .into_iter()
@@ -143,7 +154,8 @@ impl<A: StateAtom> Impl<A> {
                 // nogoods.
                 {
                     let initial_conflict = find_conflict(solver, output, candidates.clone())?;
-                    candidates = update_candidates(candidates, &mandatory, initial_conflict);
+                    candidates = update_candidates(candidates, &mandatory, &initial_conflict);
+                    last_conflict = initial_conflict;
                 }
 
                 if !probe_loop {
@@ -151,6 +163,12 @@ impl<A: StateAtom> Impl<A> {
                 }
 
                 while let Some(candidate) = candidates.pop() {
+                    // The cached conflict says we definitely don't
+                    // need `candidate`.  We can just drop it.
+                    if !last_conflict.contains(&candidate) {
+                        continue;
+                    }
+
                     // Let's probe and see happens when we don't
                     // assume the last literal in `candidates`.
                     let mut assumptions = candidates.clone();
@@ -165,7 +183,8 @@ impl<A: StateAtom> Impl<A> {
                         // We still have a conflict; we don't need the
                         // candidate!
                         Ok(conflict) => {
-                            candidates = update_candidates(candidates, &mandatory, conflict);
+                            candidates = update_candidates(candidates, &mandatory, &conflict);
+                            last_conflict = conflict;
                         }
                     }
                 }
@@ -517,6 +536,40 @@ fn test_reduce_disjoint() {
         .expect("is disjoint");
     assert_eq!(refined_positive.len(), 1);
     assert!(refined_positive[0] == ("y".into(), true) || refined_positive[0] == ("z".into(), true));
+}
+
+#[test]
+fn test_reduce_disjoint_in_order() {
+    // Add domain constraints `exactly_one_of(x, y)`,
+    // `exactly_one_of(x, z)`, and nogood `x = true.
+    let mut state = Impl::<String>::new();
+
+    state.declare_choice(ChoiceConstraint::new(vec!["x".into(), "y".into()]));
+    state.declare_choice(ChoiceConstraint::new(vec!["x".into(), "z".into()]));
+    state.add_nogood(FathomedRegion::new(vec!["x".into()]));
+
+    // Let's refine `y = true, z = true`.  Since'll always check `z =
+    // true` first, this should simplify to `y = true`.
+    assert_eq!(
+        state
+            .disjoint_from_nogoods(
+                vec![("y".into(), true), ("z".into(), true)],
+                AssignmentReductionPolicy::StrictlyInOrder
+            )
+            .expect("is disjoint"),
+        vec![("y".into(), true)]
+    );
+
+    // Same thing, but in the reverse order.
+    assert_eq!(
+        state
+            .disjoint_from_nogoods(
+                vec![("z".into(), true), ("y".into(), true)],
+                AssignmentReductionPolicy::StrictlyInOrder
+            )
+            .expect("is disjoint"),
+        vec![("z".into(), true)]
+    );
 }
 
 #[test]
