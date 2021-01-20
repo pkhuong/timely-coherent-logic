@@ -18,6 +18,9 @@ pub enum AssignmentReductionPolicy {
     /// Don't reduce at all, only check that the input is disjoint
     /// from the nogoods and return it as is.
     Noop,
+    /// Check that the input assignment is valid, and stop after using
+    /// the conflict information from that one solve.
+    OneShot,
 }
 
 pub struct Impl<A: StateAtom> {
@@ -41,7 +44,7 @@ impl<A: StateAtom> Impl<A> {
     /// if any.
     ///
     /// A `None` means that the search has been completed.
-    pub fn gap_witness(&mut self, _policy: AssignmentReductionPolicy) -> Option<Vec<(A, bool)>> {
+    pub fn gap_witness(&mut self, policy: AssignmentReductionPolicy) -> Option<Vec<(A, bool)>> {
         use std::convert::TryInto;
         use VariableMeaning::Atom;
 
@@ -64,7 +67,19 @@ impl<A: StateAtom> Impl<A> {
                     }
                 }
 
-                Some(result)
+                if policy == AssignmentReductionPolicy::Noop {
+                    Some(result)
+                } else {
+                    // Reduction can only fail if the input assignment
+                    // overlaps with the nogoods, or on timeout.
+                    // Overlap is impossible (unless the SAT solver is
+                    // broken), so we can always return the initial
+                    // witness on error.
+                    Some(
+                        self.disjoint_from_nogoods(result.clone(), policy)
+                            .unwrap_or(result),
+                    )
+                }
             }
             // If there is no model, then we're done.
             Lbool::False => None,
@@ -86,19 +101,43 @@ impl<A: StateAtom> Impl<A> {
     pub fn disjoint_from_nogoods(
         &mut self,
         assignment: Vec<(A, bool)>,
-        _reduction_policy: AssignmentReductionPolicy,
+        reduction_policy: AssignmentReductionPolicy,
     ) -> Result<Vec<(A, bool)>, &'static str> {
+        use AssignmentReductionPolicy::{Noop, OneShot};
+
+        let use_conflict = match reduction_policy {
+            Noop => false,
+            OneShot => true,
+        };
+
         match self.sat_state.tseitin_checker().1 {
             None => Ok(vec![]),
             Some(output) => {
                 // Current set of non-mandatory assumptions we're
                 // trying to reduce.
-                let candidates = build_assumptions(&mut self.sat_state, assignment);
+                let mut candidates = build_assumptions(&mut self.sat_state, assignment);
+
+                // Constructs a new `candidates` vector from a
+                // conflict information.
+                let update_candidates = |candidates: Vec<Lit>, conflict: BTreeSet<Lit>| {
+                    if use_conflict {
+                        candidates
+                            .into_iter()
+                            .filter(|lit| conflict.contains(lit))
+                            .collect::<Vec<Lit>>()
+                    } else {
+                        candidates
+                    }
+                };
                 let solver = self.sat_state.tseitin_checker().0;
 
                 // Confirm that the candidates are disjoint from the
                 // nogoods.
-                find_conflict(solver, output, candidates.clone())?;
+                {
+                    let initial_conflict = find_conflict(solver, output, candidates.clone())?;
+                    candidates = update_candidates(candidates, initial_conflict);
+                }
+
                 Ok(literals_to_assignment(&mut self.sat_state, candidates))
             }
         }
@@ -377,4 +416,106 @@ fn test_nogood_with_multiple_domains() {
     state.add_nogood(FathomedRegion::new(vec!["y".into(), "z".into()]));
     // We should be done.
     assert_eq!(state.gap_witness(AssignmentReductionPolicy::Noop), None);
+}
+
+#[test]
+fn test_disjoint_from_nogoods() {
+    use std::collections::HashMap;
+
+    // Add domain constraints `exactly_one_of(x, y)`,
+    // `exactly_one_of(x, z)`, and nogood `x = true.
+    //
+    // There should be exactly one gap left, for `x = false, y = true,
+    // z = true`, and we should be able to refine it into `y = z =
+    // true`.
+
+    let mut state = Impl::<String>::new();
+
+    state.declare_choice(ChoiceConstraint::new(vec!["x".into(), "y".into()]));
+    state.declare_choice(ChoiceConstraint::new(vec!["x".into(), "z".into()]));
+    state.add_nogood(FathomedRegion::new(vec!["x".into()]));
+
+    let witness = state
+        .gap_witness(AssignmentReductionPolicy::Noop)
+        .expect("has witness");
+    let refined = state
+        .disjoint_from_nogoods(witness, AssignmentReductionPolicy::OneShot)
+        .expect("is disjoint");
+    // It would also be possible to have `y = true, z = true`, but
+    // that's a more complex clause.
+    assert_eq!(
+        refined.into_iter().collect::<HashMap<_, _>>(),
+        [("x".into(), false)].iter().cloned().collect()
+    );
+}
+
+#[test]
+fn test_disjoint_from_nogoods_refine() {
+    // Add domain constraints `exactly_one_of(x, y)`,
+    // `exactly_one_of(x, z)`, and nogood `x = true.
+
+    let mut state = Impl::<String>::new();
+
+    state.declare_choice(ChoiceConstraint::new(vec!["x".into(), "y".into()]));
+    state.declare_choice(ChoiceConstraint::new(vec!["x".into(), "z".into()]));
+    state.add_nogood(FathomedRegion::new(vec!["x".into()]));
+
+    // `x = true` should fail.
+    assert!(state
+        .disjoint_from_nogoods(vec![("x".into(), true)], AssignmentReductionPolicy::OneShot)
+        .is_err());
+
+    // Let's refine `y = true, z = true`.  We can simplify that to
+    // either `y = true` or `z = true`.
+    let refined_positive = state
+        .disjoint_from_nogoods(
+            vec![("y".into(), true), ("z".into(), true)],
+            AssignmentReductionPolicy::OneShot,
+        )
+        .expect("is disjoint");
+    assert_eq!(refined_positive.len(), 1);
+    assert!(refined_positive[0] == ("y".into(), true) || refined_positive[0] == ("z".into(), true));
+}
+
+#[test]
+fn test_two_nogoods() {
+    // Add domain constraints `exactly_one_of(w, x)`,
+    // `exactly_one_of(y, z)`, and nogood `w = true`, `y = true`.
+    // That should leave one option, `x = z = true`.
+
+    let mut state = Impl::<String>::new();
+
+    state.declare_choice(ChoiceConstraint::new(vec!["w".into(), "x".into()]));
+    state.declare_choice(ChoiceConstraint::new(vec!["y".into(), "z".into()]));
+    state.add_nogood(FathomedRegion::new(vec!["w".into()]));
+    state.add_nogood(FathomedRegion::new(vec!["y".into()]));
+
+    let witness = state
+        .gap_witness(AssignmentReductionPolicy::Noop)
+        .expect("has witness");
+    assert_eq!(
+        witness,
+        vec![
+            ("w".into(), false),
+            ("x".into(), true),
+            ("y".into(), false),
+            ("z".into(), true)
+        ]
+    );
+
+    state
+        .disjoint_from_nogoods(witness, AssignmentReductionPolicy::OneShot)
+        .expect("is disjoint");
+    // Just `x = true` isn't enough.
+    assert!(state
+        .disjoint_from_nogoods(vec![("x".into(), true)], AssignmentReductionPolicy::OneShot)
+        .is_err());
+
+    let refined = state
+        .disjoint_from_nogoods(
+            vec![("x".into(), true), ("z".into(), true)],
+            AssignmentReductionPolicy::OneShot,
+        )
+        .expect("is disjoint");
+    assert_eq!(refined, vec![("x".into(), true), ("z".into(), true)]);
 }
