@@ -125,8 +125,8 @@
 <body>
 <header>
 <h1 class="title">Timely Coherent Logic</h1>
-<p class="subtitle">72f33f8276dc9388 @ https://github.com/pkhuong/timely-coherent-logic/tree/wip-6</p>
-<p class="date">Tue 19 Jan 2021 08:40:04 AM EST</p>
+<p class="subtitle">cbdc8c0d93b90b5e @ https://github.com/pkhuong/timely-coherent-logic/tree/wip-6</p>
+<p class="date">Tue 19 Jan 2021 10:50:37 PM EST</p>
 </header>
 <nav id="TOC">
 <ul>
@@ -146,7 +146,7 @@
 <li><a href="#add-domain-constraints">add domain constraints</a></li>
 <li><a href="#construct-a-complemented-checker-sat-state">construct a “complemented” checker SAT state</a></li>
 <li><a href="#check-and-reduce-assignments-with-tseitin">Check and reduce assignments with Tseitin</a></li>
-<li><a href="#positivesatumerator-satumerate-only-with-truths-diff"><code>PositiveSatumerator</code>: Satumerate only with truths <a href='https://github.com/pkhuong/timely-coherent-logic/commit/72f33f8276dc9388d11a49e02f685c407b6bac4f?diff=unified#toc'>(diff)</a></a></li>
+<li><a href="#positivesatumerator-satumerate-only-with-truths-diff"><code>PositiveSatumerator</code>: Satumerate only with truths <a href='https://github.com/pkhuong/timely-coherent-logic/commit/cbdc8c0d93b90b5ef8c34534a33f179a9ee92412?diff=unified#toc'>(diff)</a></a></li>
 </ul></li>
 </ul>
 </nav>
@@ -647,19 +647,41 @@
 <p>Now, the learned clauses are a side-effect of the CDCL solving process, and there is no guarantee on their quality. Of course, we can’t expect a minimum conflict: that’s too hard. Perhaps surprisingly, we’re not guaranteed to have a minimal conflict either!</p>
 <p>If we really want to reduce the partial assignment while preserving disjointedness, we want to probe every variable in the assignment. We’ll remove that variable from the assumptions, and see if the result is still UNSAT: if so, we don’t need the variable, and we can use the learned clause to detect that some other variables are also redundant. If the system is not satisfiable, we know removing the variable loses disjointedness, so we add it to a set of mandatory variables.</p>
 <p>Once we’ve probed every variable in the assumptions (or dropped them due to learned clauses), the set of mandatory variables is a minimal disjoint partial assignment: removing anything from that list introduces some overlap between the nogoods and the assignment’s extensions.</p>
-<p>One might have a really good idea about the “best” order in which to probe variables, maybe as part of some GRASP heuristic. That’s why we also offer pure probing-based reduction, without any input from learned clauses.</p>
-<h4 id="backend-use-the-tseitin-encoded-solver-to-check-partial-assignments-diff">backend: use the Tseitin-encoded solver to check partial assignments <a href='https://github.com/pkhuong/timely-coherent-logic/commit/b869e31a77aaf9d9c2cb49000cbd7db1eb8e6758?diff=unified#toc'>(diff)</a></h4>
+<p>One might have a really good idea about the “best” order in which to probe variables, maybe as part of some GRASP heuristic. That’s why we also offer a fully in-order reduction mode, where we only use learned conflict clauses when they don’t jump the probing queue.</p>
+<h4 id="backend-use-the-tseitin-encoded-solver-to-check-partial-assignments-diff">backend: use the Tseitin-encoded solver to check partial assignments <a href='https://github.com/pkhuong/timely-coherent-logic/commit/0663cec90f38707076765159a25b51b56efdb72e?diff=unified#toc'>(diff)</a></h4>
 <details>
-<summary>Commit summary <a href='https://github.com/pkhuong/timely-coherent-logic/commit/b869e31a77aaf9d9c2cb49000cbd7db1eb8e6758?diff=unified#toc'>(GH)</a></summary>
-<pre> satumerator/src/backend.rs | 396 <span style='color: green'>+++++++++++++++++++++++++++++++++++++++++++</span><span style='color: red'>--</span>
- 1 file changed, 387 insertions(+), 9 deletions(-)
+<summary>Commit summary <a href='https://github.com/pkhuong/timely-coherent-logic/commit/0663cec90f38707076765159a25b51b56efdb72e?diff=unified#toc'>(GH)</a></summary>
+<pre> satumerator/src/backend.rs | 169 <span style='color: green'>+++++++++++++++++++++++++++++++++++++++++++</span><span style='color: red'>--</span>
+ 1 file changed, 162 insertions(+), 7 deletions(-)
 </pre>
 </details>
-<h2 id="positivesatumerator-satumerate-only-with-truths-diff"><code>PositiveSatumerator</code>: Satumerate only with truths <a href='https://github.com/pkhuong/timely-coherent-logic/commit/72f33f8276dc9388d11a49e02f685c407b6bac4f?diff=unified#toc'>(diff)</a></h2>
+<h4 id="backend-use-the-conflict-set-to-reduce-assignments-once-diff">backend: use the conflict set to reduce assignments, once <a href='https://github.com/pkhuong/timely-coherent-logic/commit/2457505451e77fd8660ee08b7a9992bda94a035f?diff=unified#toc'>(diff)</a></h4>
+<details>
+<summary>Commit summary <a href='https://github.com/pkhuong/timely-coherent-logic/commit/2457505451e77fd8660ee08b7a9992bda94a035f?diff=unified#toc'>(GH)</a></summary>
+<pre> satumerator/src/backend.rs | 151 <span style='color: green'>+++++++++++++++++++++++++++++++++++++++++++</span><span style='color: red'>--</span>
+ 1 file changed, 146 insertions(+), 5 deletions(-)
+</pre>
+</details>
+<h4 id="backend-probe-each-member-of-a-partial-assignment-when-reducing-diff">backend: probe each member of a partial assignment when reducing <a href='https://github.com/pkhuong/timely-coherent-logic/commit/0906673abce8a0e27049e5ea3fd018a3cdb56e0f?diff=unified#toc'>(diff)</a></h4>
+<p>When the SAT solver gives us a conflict clause, we definitely know that literals that do not appear in the conflict can be removed from the partial assignment. However, there is no guarantee that literals that do appear in the conflicts are truly necessary. Probe each literal before keeping it: if we find overlap when we remove the literal, then we really want to keep it.</p>
+<details>
+<summary>Commit summary <a href='https://github.com/pkhuong/timely-coherent-logic/commit/0906673abce8a0e27049e5ea3fd018a3cdb56e0f?diff=unified#toc'>(GH)</a></summary>
+<pre> satumerator/src/backend.rs | 144 <span style='color: green'>+++++++++++++++++++++++++++++</span><span style='color: red'>----------------</span>
+ 1 file changed, 93 insertions(+), 51 deletions(-)
+</pre>
+</details>
+<h4 id="backend-reduce-a-partial-assignment-strictly-in-order-diff">backend: reduce a partial assignment strictly in order <a href='https://github.com/pkhuong/timely-coherent-logic/commit/c2c3451cf716ef9f745eafe80f565ec4ee6e9a89?diff=unified#toc'>(diff)</a></h4>
+<details>
+<summary>Commit summary <a href='https://github.com/pkhuong/timely-coherent-logic/commit/c2c3451cf716ef9f745eafe80f565ec4ee6e9a89?diff=unified#toc'>(GH)</a></summary>
+<pre> satumerator/src/backend.rs | 63 <span style='color: green'>++++++++++++++++++++++++++++++++++++++++++</span><span style='color: red'>----</span>
+ 1 file changed, 58 insertions(+), 5 deletions(-)
+</pre>
+</details>
+<h2 id="positivesatumerator-satumerate-only-with-truths-diff"><code>PositiveSatumerator</code>: Satumerate only with truths <a href='https://github.com/pkhuong/timely-coherent-logic/commit/cbdc8c0d93b90b5ef8c34534a33f179a9ee92412?diff=unified#toc'>(diff)</a></h2>
 <p>The search problem in our coherent logic prover is more naturally seen as a exploring a rose-tree with multi-way branches than a binary tree. It doesn’t really mean much to know that a given consequent should <em>not</em> be instantiated; we really want to know which of the others might be interesting.</p>
 <p>The <code>PositiveSatumerator</code> exposes a more restricted interface, where every decision variable (consequent to instantiate or not instantiate) must be bound by an “exactly one of” cardinality constraint, and all “nogoods” must only include variables set to true. In fact, the interface only accepts a set of variables as nogoods, without any associated truth value (the variables must be true in the forbidden region), and represents partial assignments as vectors of variables (atoms), with an implicit “true” value.</p>
 <details>
-<summary>Commit summary <a href='https://github.com/pkhuong/timely-coherent-logic/commit/72f33f8276dc9388d11a49e02f685c407b6bac4f?diff=unified#toc'>(GH)</a></summary>
+<summary>Commit summary <a href='https://github.com/pkhuong/timely-coherent-logic/commit/cbdc8c0d93b90b5ef8c34534a33f179a9ee92412?diff=unified#toc'>(GH)</a></summary>
 <pre> satumerator/src/lib.rs | 246 <span style='color: green'>+++++++++++++++++++++++++++++++++++++++++++++++++</span>
  1 file changed, 246 insertions(+)</pre>
 </details>
