@@ -21,6 +21,9 @@ pub enum AssignmentReductionPolicy {
     /// Check that the input assignment is valid, and stop after using
     /// the conflict information from that one solve.
     OneShot,
+    /// Take any hint we can get.  The result is minimal, but may
+    /// remove literals out of order.
+    Greedy,
 }
 
 pub struct Impl<A: StateAtom> {
@@ -103,42 +106,74 @@ impl<A: StateAtom> Impl<A> {
         assignment: Vec<(A, bool)>,
         reduction_policy: AssignmentReductionPolicy,
     ) -> Result<Vec<(A, bool)>, &'static str> {
-        use AssignmentReductionPolicy::{Noop, OneShot};
+        use AssignmentReductionPolicy::{Greedy, Noop, OneShot};
 
-        let use_conflict = match reduction_policy {
-            Noop => false,
-            OneShot => true,
+        let (use_conflict, probe_loop) = match reduction_policy {
+            Noop => (false, false),
+            OneShot => (true, false),
+            Greedy => (true, true),
         };
 
         match self.sat_state.tseitin_checker().1 {
             None => Ok(vec![]),
             Some(output) => {
+                // Set of literals that we probed and know are
+                // necessary for this reduction order.
+                let mut mandatory = BTreeSet::new();
                 // Current set of non-mandatory assumptions we're
                 // trying to reduce.
                 let mut candidates = build_assumptions(&mut self.sat_state, assignment);
 
                 // Constructs a new `candidates` vector from a
                 // conflict information.
-                let update_candidates = |candidates: Vec<Lit>, conflict: BTreeSet<Lit>| {
-                    if use_conflict {
-                        candidates
-                            .into_iter()
-                            .filter(|lit| conflict.contains(lit))
-                            .collect::<Vec<Lit>>()
-                    } else {
-                        candidates
-                    }
-                };
+                let update_candidates =
+                    |candidates: Vec<Lit>, mandatory: &BTreeSet<Lit>, conflict: BTreeSet<Lit>| {
+                        if use_conflict {
+                            candidates
+                                .into_iter()
+                                .filter(|lit| conflict.contains(lit) & !mandatory.contains(lit))
+                                .collect::<Vec<Lit>>()
+                        } else {
+                            candidates
+                        }
+                    };
                 let solver = self.sat_state.tseitin_checker().0;
 
                 // Confirm that the candidates are disjoint from the
                 // nogoods.
                 {
                     let initial_conflict = find_conflict(solver, output, candidates.clone())?;
-                    candidates = update_candidates(candidates, initial_conflict);
+                    candidates = update_candidates(candidates, &mandatory, initial_conflict);
                 }
 
-                Ok(literals_to_assignment(&mut self.sat_state, candidates))
+                if !probe_loop {
+                    return Ok(literals_to_assignment(&mut self.sat_state, candidates));
+                }
+
+                while let Some(candidate) = candidates.pop() {
+                    // Let's probe and see happens when we don't
+                    // assume the last literal in `candidates`.
+                    let mut assumptions = candidates.clone();
+                    assumptions.extend(mandatory.iter().cloned());
+
+                    match find_conflict(solver, output, assumptions) {
+                        // If we're not positive that the candidate is
+                        // redundant, mark it as mandatory.
+                        Err(_) => {
+                            mandatory.insert(candidate);
+                        }
+                        // We still have a conflict; we don't need the
+                        // candidate!
+                        Ok(conflict) => {
+                            candidates = update_candidates(candidates, &mandatory, conflict);
+                        }
+                    }
+                }
+
+                Ok(literals_to_assignment(
+                    &mut self.sat_state,
+                    mandatory.into_iter().collect(),
+                ))
             }
         }
     }
@@ -305,34 +340,6 @@ fn test_nogood() {
         .gap_witness(AssignmentReductionPolicy::Noop)
         .expect("has witness");
     assert_eq!(witness, vec![("x".into(), false), ("y".into(), false)]);
-    // And the witness should be disjoint.
-    assert_eq!(
-        state
-            .disjoint_from_nogoods(witness.clone(), AssignmentReductionPolicy::Noop)
-            .expect("ok"),
-        witness
-    );
-}
-
-#[test]
-fn test_nogood_overlap() {
-    // Add nogoods for `x = true` and `y = true`.
-    // We should find that `x = true` overlaps with the nogoods.
-    let mut state = Impl::<String>::new();
-
-    state.add_nogood(FathomedRegion::new(vec!["x".into()]));
-    state.add_nogood(FathomedRegion::new(vec!["y".into()]));
-
-    assert!(state
-        .disjoint_from_nogoods(vec![("x".into(), true)], AssignmentReductionPolicy::Noop)
-        .is_err());
-    // And should also reject any extension.
-    assert!(state
-        .disjoint_from_nogoods(
-            vec![("x".into(), true), ("y".into(), false)],
-            AssignmentReductionPolicy::Noop
-        )
-        .is_err());
 }
 
 #[test]
@@ -404,18 +411,31 @@ fn test_nogood_with_multiple_domains() {
         witness,
         vec![("x".into(), false), ("y".into(), true), ("z".into(), true)]
     );
-    // And the witness should be disjoint.
-    assert_eq!(
-        state
-            .disjoint_from_nogoods(witness.clone(), AssignmentReductionPolicy::Noop)
-            .expect("ok"),
-        witness
-    );
 
     // Now let's claim we also don't like `y = z = true`.
     state.add_nogood(FathomedRegion::new(vec!["y".into(), "z".into()]));
     // We should be done.
     assert_eq!(state.gap_witness(AssignmentReductionPolicy::Noop), None);
+}
+
+#[test]
+fn test_reduced_nogood_with_multiple_domains() {
+    // Add domain constraints `exactly_one_of(x, y)`,
+    // `exactly_one_of(x, z)`, and nogood `x = true.
+    //
+    // There should be exactly one gap left, for `x = false, y = true,
+    // z = true`, and it is implied by `x = false`.
+
+    let mut state = Impl::<String>::new();
+
+    state.declare_choice(ChoiceConstraint::new(vec!["x".into(), "y".into()]));
+    state.declare_choice(ChoiceConstraint::new(vec!["x".into(), "z".into()]));
+    state.add_nogood(FathomedRegion::new(vec!["x".into()]));
+
+    let witness = state
+        .gap_witness(AssignmentReductionPolicy::Greedy)
+        .expect("has witness");
+    assert_eq!(witness, vec![("x".into(), false)]);
 }
 
 #[test]
@@ -471,6 +491,28 @@ fn test_disjoint_from_nogoods_refine() {
         .disjoint_from_nogoods(
             vec![("y".into(), true), ("z".into(), true)],
             AssignmentReductionPolicy::OneShot,
+        )
+        .expect("is disjoint");
+    assert_eq!(refined_positive.len(), 1);
+    assert!(refined_positive[0] == ("y".into(), true) || refined_positive[0] == ("z".into(), true));
+}
+
+#[test]
+fn test_reduce_disjoint() {
+    // Add domain constraints `exactly_one_of(x, y)`,
+    // `exactly_one_of(x, z)`, and nogood `x = true.
+    let mut state = Impl::<String>::new();
+
+    state.declare_choice(ChoiceConstraint::new(vec!["x".into(), "y".into()]));
+    state.declare_choice(ChoiceConstraint::new(vec!["x".into(), "z".into()]));
+    state.add_nogood(FathomedRegion::new(vec!["x".into()]));
+
+    // Let's refine `y = true, z = true`.  We can simplify that to
+    // either `y = true` or `z = true`.
+    let refined_positive = state
+        .disjoint_from_nogoods(
+            vec![("y".into(), true), ("z".into(), true)],
+            AssignmentReductionPolicy::Greedy,
         )
         .expect("is disjoint");
     assert_eq!(refined_positive.len(), 1);
